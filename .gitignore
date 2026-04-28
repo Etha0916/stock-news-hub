@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Local-dev / Plan A artefacts (no longer used)
+news.db
+app.py
+db.py
+ingest.py
+static/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Generated data — committed to the build artifact, not main branch
+# (uncomment if you decide to also commit them on main)
+# docs/data/articles.json
+# docs/data/themes.json

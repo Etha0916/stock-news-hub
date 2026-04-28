@@ -1,0 +1,112 @@
+{
+  "groups": {
+    "mag7": {
+      "label_en": "Magnificent 7",
+      "label_zh": "美股七雄"
+    },
+    "eln": {
+      "label_en": "ELN Underlyings",
+      "label_zh": "ELN 標的"
+    }
+  },
+  "themes": {
+    "aapl": {
+      "label_en": "AAPL",
+      "label_zh": "AAPL",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "msft": {
+      "label_en": "MSFT",
+      "label_zh": "MSFT",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "googl": {
+      "label_en": "GOOGL",
+      "label_zh": "GOOGL",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "amzn": {
+      "label_en": "AMZN",
+      "label_zh": "AMZN",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "meta": {
+      "label_en": "META",
+      "label_zh": "META",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "nvda": {
+      "label_en": "NVDA",
+      "label_zh": "NVDA",
+      "groups": [
+        "mag7"
+      ]
+    },
+    "tsla": {
+      "label_en": "TSLA",
+      "label_zh": "TSLA",
+      "groups": [
+        "mag7",
+        "eln"
+      ]
+    },
+    "hims": {
+      "label_en": "HIMS",
+      "label_zh": "HIMS",
+      "groups": [
+        "eln"
+      ]
+    },
+    "pltr": {
+      "label_en": "PLTR",
+      "label_zh": "PLTR",
+      "groups": [
+        "eln"
+      ]
+    },
+    "mstr": {
+      "label_en": "MSTR",
+      "label_zh": "MSTR",
+      "groups": [
+        "eln"
+      ]
+    },
+    "snap": {
+      "label_en": "SNAP",
+      "label_zh": "SNAP",
+      "groups": [
+        "eln"
+      ]
+    },
+    "semi": {
+      "label_en": "Semiconductors",
+      "label_zh": "半導體產業",
+      "groups": []
+    },
+    "taiwan_tech": {
+      "label_en": "Taiwan Tech",
+      "label_zh": "台灣科技股",
+      "groups": []
+    },
+    "ai": {
+      "label_en": "AI",
+      "label_zh": "人工智慧",
+      "groups": []
+    },
+    "fed": {
+      "label_en": "Fed Rate",
+      "label_zh": "聯準會利率",
+      "groups": []
+    }
+  }
+}

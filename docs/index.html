@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Fin-Tech News Hub</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f1115'/%3E%3Ctext x='50%25' y='52%25' text-anchor='middle' dominant-baseline='middle' font-size='38'%3E📈%3C/text%3E%3C/svg%3E">
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+         "Microsoft JhengHei", "PingFang TC", sans-serif;
+         margin: 0; background: #0f1115; color: #e8eaed; }
+  header { padding: 14px 24px; background: #161a22;
+           border-bottom: 1px solid #2a2f3a;
+           display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .stats { font-size: 12px; color: #9aa0a6; }
+  .lang-toggle { margin-left: auto; font-size: 13px; color: #c4c7cc; }
+  .lang-toggle label { margin-left: 12px; cursor: pointer; }
+  button { background: #4c8bf5; color: #fff; border: 0; padding: 8px 14px;
+           border-radius: 8px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #3b7ae0; }
+  button:disabled { background: #2a3550; cursor: wait; }
+  .container { display: grid; grid-template-columns: 240px 1fr; gap: 24px;
+               padding: 24px; max-width: 1200px; margin: 0 auto; }
+  @media (max-width: 720px) {
+    .container { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+    aside { position: static !important; }
+    header { padding: 12px 16px; }
+    h1 { font-size: 18px; }
+  }
+  aside { background: #161a22; padding: 16px; border-radius: 12px;
+          height: fit-content; position: sticky; top: 16px; }
+  aside h3 { margin: 0 0 8px; font-size: 11px; color: #9aa0a6;
+             text-transform: uppercase; letter-spacing: 0.6px;
+             display: flex; align-items: center; }
+  .clear-btn { margin-left: auto; background: transparent; color: #9aa0a6;
+               padding: 0; font-size: 11px; }
+  .clear-btn:hover { color: #e8eaed; background: transparent; }
+  .theme-item { display: flex; align-items: center; gap: 8px;
+                padding: 6px 6px; border-radius: 6px; cursor: pointer;
+                font-size: 14px; user-select: none; }
+  .theme-item:hover { background: #1d2230; }
+  .theme-item input { cursor: pointer; }
+  .group { margin-top: 14px; border-top: 1px solid #2a2f3a; padding-top: 10px; }
+  .group-header { display: flex; align-items: center; gap: 8px;
+                  padding: 4px 4px; cursor: pointer;
+                  font-size: 13px; color: #c4c7cc; user-select: none; }
+  .group-header .chev { font-size: 10px; color: #6f7682;
+                        transition: transform 0.15s; width: 10px; }
+  .group-header.collapsed .chev { transform: rotate(-90deg); }
+  .group-header strong { font-weight: 600; }
+  .group-header .count { color: #6f7682; font-size: 11px; margin-left: auto; }
+  .group-children { padding-left: 18px; padding-top: 4px; }
+  .group-header.collapsed + .group-children { display: none; }
+  .group-children .theme-item { font-size: 13.5px; padding: 5px 6px; }
+  .group-children .theme-item.shared::after {
+    content: "↔"; color: #6f7682; font-size: 11px; margin-left: auto;
+  }
+  .feed article { background: #161a22; border: 1px solid #2a2f3a;
+                  border-radius: 12px; padding: 16px 20px; margin-bottom: 12px;
+                  transition: border-color 0.15s; }
+  .feed article:hover { border-color: #4c8bf5; }
+  .feed h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600;
+             line-height: 1.4; }
+  .feed h2 a { color: #e8eaed; text-decoration: none; }
+  .feed h2 a:hover { color: #8ab4ff; }
+  .meta { font-size: 12px; color: #9aa0a6; margin-bottom: 8px; }
+  .summary { font-size: 13.5px; color: #c4c7cc; line-height: 1.55; }
+  .badges { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px;
+           background: #2a3550; color: #a8c4ff; }
+  .empty { color: #9aa0a6; padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📈 Fin-Tech News Hub</h1>
+  <span class="stats" id="stats"></span>
+  <button id="reload">Reload</button>
+  <span class="lang-toggle">
+    <label><input type="radio" name="lang" value="zh" checked> 中文</label>
+    <label><input type="radio" name="lang" value="en"> EN</label>
+  </span>
+</header>
+<div class="container">
+  <aside>
+    <h3>
+      <span id="filter-title">分類篩選</span>
+      <button class="clear-btn" id="clear">清除</button>
+    </h3>
+    <div id="themes"></div>
+  </aside>
+  <main class="feed" id="feed"><div class="empty">Loading…</div></main>
+</div>
+<script>
+let lang = "zh";
+let groups = {};       // {key: {label_en, label_zh}}
+let themes = {};       // {key: {label_en, label_zh, groups: []}}
+let allArticles = [];  // full JSON dump
+let updatedAt = null;
+const selected = new Set();
+const collapsedGroups = new Set();
+
+const tr = (obj) => lang === "zh" ? obj.label_zh : obj.label_en;
+
+async function loadData() {
+  // Cache-bust so we always pick up the latest Pages deployment
+  const v = Date.now();
+  const [t, a] = await Promise.all([
+    fetch(`./data/themes.json?v=${v}`).then(r => r.json()),
+    fetch(`./data/articles.json?v=${v}`).then(r => r.json()),
+  ]);
+  groups = t.groups;
+  themes = t.themes;
+  allArticles = a.articles || [];
+  updatedAt = a.updated_at;
+  renderThemes();
+  renderFeed();
+  renderStats();
+}
+
+function renderThemes() {
+  const el = document.getElementById("themes");
+  el.innerHTML = "";
+
+  // Top-level themes (groups: [])
+  for (const [key, t] of Object.entries(themes)) {
+    if (!t.groups || t.groups.length === 0) {
+      el.appendChild(makeThemeRow(key, t, false));
+    }
+  }
+
+  // Each group
+  for (const [gkey, g] of Object.entries(groups)) {
+    const groupBox = document.createElement("div");
+    groupBox.className = "group";
+
+    const childKeys = Object.entries(themes)
+      .filter(([_, t]) => (t.groups || []).includes(gkey))
+      .map(([k, _]) => k);
+    const allSelected = childKeys.length > 0 && childKeys.every(k => selected.has(k));
+
+    const header = document.createElement("div");
+    header.className = "group-header" + (collapsedGroups.has(gkey) ? " collapsed" : "");
+    header.innerHTML = `
+      <span class="chev">▼</span>
+      <input type="checkbox" ${allSelected ? "checked" : ""}
+             onclick="event.stopPropagation()">
+      <strong>${tr(g)}</strong>
+      <span class="count">${childKeys.length}</span>
+    `;
+    header.addEventListener("click", e => {
+      if (e.target.tagName === "INPUT") return;
+      header.classList.toggle("collapsed");
+      if (header.classList.contains("collapsed")) collapsedGroups.add(gkey);
+      else collapsedGroups.delete(gkey);
+    });
+    header.querySelector("input").addEventListener("change", e => {
+      if (e.target.checked) childKeys.forEach(k => selected.add(k));
+      else childKeys.forEach(k => selected.delete(k));
+      renderThemes();
+      renderFeed();
+    });
+    groupBox.appendChild(header);
+
+    const children = document.createElement("div");
+    children.className = "group-children";
+    for (const ck of childKeys) {
+      const t = themes[ck];
+      const isShared = (t.groups || []).length > 1;
+      children.appendChild(makeThemeRow(ck, t, isShared));
+    }
+    groupBox.appendChild(children);
+    el.appendChild(groupBox);
+  }
+
+  document.getElementById("filter-title").textContent =
+    lang === "zh" ? "分類篩選" : "Filters";
+  document.getElementById("clear").textContent =
+    lang === "zh" ? "清除" : "Clear";
+}
+
+function makeThemeRow(key, t, isShared) {
+  const row = document.createElement("label");
+  row.className = "theme-item" + (isShared ? " shared" : "");
+  row.title = isShared
+    ? (lang === "zh" ? "此標的同時屬於多組" : "Shared across groups")
+    : "";
+  row.innerHTML =
+    `<input type="checkbox" data-theme="${key}" ${selected.has(key) ? "checked" : ""}>` +
+    `<span>${tr(t)}</span>`;
+  row.querySelector("input").addEventListener("change", e => {
+    if (e.target.checked) selected.add(key); else selected.delete(key);
+    renderThemes();
+    renderFeed();
+  });
+  return row;
+}
+
+function renderFeed() {
+  const feed = document.getElementById("feed");
+  let articles = allArticles;
+  if (selected.size > 0) {
+    articles = allArticles.filter(a =>
+      (a.labels || []).some(L => selected.has(L))
+    );
+  }
+  if (!articles.length) {
+    feed.innerHTML = `<div class="empty">${
+      lang === "zh" ? "暫無符合條件的文章" : "No matching articles"
+    }</div>`;
+    return;
+  }
+  feed.innerHTML = articles.map(a => {
+    const labels = (a.labels || []).map(L => {
+      const t = themes[L];
+      const name = t ? tr(t) : L;
+      return `<span class="badge">${name}</span>`;
+    }).join("");
+    let dt = "";
+    try { dt = a.published ? new Date(a.published).toLocaleString() : ""; }
+    catch (_) {}
+    return `<article>
+      <h2><a href="${a.url}" target="_blank" rel="noopener">${escapeHTML(a.title)}</a></h2>
+      <div class="meta">${escapeHTML(a.source || "")} · ${dt}</div>
+      <div class="summary">${escapeHTML(a.summary || "")}</div>
+      <div class="badges">${labels}</div>
+    </article>`;
+  }).join("");
+}
+
+function escapeHTML(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function renderStats() {
+  const el = document.getElementById("stats");
+  if (!updatedAt) { el.textContent = ""; return; }
+  let when;
+  try {
+    const d = new Date(updatedAt);
+    when = d.toLocaleString();
+  } catch (_) { when = updatedAt; }
+  const total = allArticles.length;
+  el.textContent = lang === "zh"
+    ? `${total} 篇文章 · 最後更新 ${when}`
+    : `${total} articles · updated ${when}`;
+}
+
+document.getElementById("reload").addEventListener("click", async () => {
+  const btn = document.getElementById("reload");
+  btn.disabled = true; btn.textContent = "Loading…";
+  try { await loadData(); }
+  finally { btn.disabled = false; btn.textContent = "Reload"; }
+});
+
+document.getElementById("clear").addEventListener("click", () => {
+  selected.clear();
+  renderThemes();
+  renderFeed();
+});
+
+document.querySelectorAll('input[name="lang"]').forEach(r => {
+  r.addEventListener("change", e => {
+    lang = e.target.value;
+    document.documentElement.lang = lang === "zh" ? "zh-TW" : "en";
+    renderThemes(); renderFeed(); renderStats();
+  });
+});
+
+// Auto-reload every 5 minutes — picks up new GitHub Pages deployments
+setInterval(loadData, 5 * 60 * 1000);
+
+loadData().catch(err => {
+  document.getElementById("feed").innerHTML =
+    `<div class="empty">Failed to load data: ${escapeHTML(err.message || String(err))}</div>`;
+});
+</script>
+</body>
+</html>
