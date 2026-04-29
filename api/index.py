@@ -1,21 +1,25 @@
 """
-api/articles.py — Vercel serverless function: /api/articles
+api/index.py — Vercel serverless backend (FastAPI).
 
-Fetches every RSS source on demand, classifies, returns JSON.
-Edge-cached for 5 minutes via Cache-Control headers, so the function
-itself only actually runs at most once every ~5 minutes per region.
+Exposes:
+    GET /api/themes    — taxonomy (groups + themes)
+    GET /api/articles  — on-demand RSS fetch + classify
+
+Both responses set HTTP cache headers so Vercel's edge CDN caches them and the
+function only actually runs on cache miss.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import re
 import hashlib
 from datetime import datetime, timezone
 from time import mktime
-from http.server import BaseHTTPRequestHandler
 from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 # Make repo-root modules (config.py, classify.py) importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,10 +28,13 @@ if ROOT not in sys.path:
 
 import feedparser  # noqa: E402
 
-from config import RSS_SOURCES  # noqa: E402
+from config import RSS_SOURCES, THEMES, THEME_GROUPS  # noqa: E402
 from classify import classify  # noqa: E402
 
 
+# ---------------------------------------------------------------------------
+# Helpers (copied/adapted from build.py)
+# ---------------------------------------------------------------------------
 _TAG_RE = re.compile(r"<[^>]+>")
 _ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
              "&quot;": '"', "&#39;": "'"}
@@ -91,7 +98,6 @@ def _safe_fetch(source: dict) -> list[dict]:
 
 
 def fetch_all() -> list[dict]:
-    """Fetch every source in parallel, dedupe, sort newest-first."""
     seen: set[str] = set()
     articles: list[dict] = []
     with ThreadPoolExecutor(max_workers=12) as ex:
@@ -104,27 +110,53 @@ def fetch_all() -> list[dict]:
     return articles
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        try:
-            articles = fetch_all()
-            payload = {
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "count": len(articles),
-                "articles": articles,
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+app = FastAPI(title="Fin-Tech News Hub API")
+
+
+@app.get("/api/themes")
+def get_themes():
+    payload = {
+        "groups": THEME_GROUPS,
+        "themes": {
+            k: {
+                "label_en": v["label_en"],
+                "label_zh": v["label_zh"],
+                "groups": v.get("groups", []),
             }
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            # Edge-cache for 5 min; serve stale up to 60s while revalidating
-            self.send_header("Cache-Control",
-                             "public, s-maxage=300, stale-while-revalidate=60")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(body)
-        except Exception as e:
-            err = json.dumps({"error": str(e)}).encode("utf-8")
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(err)
+            for k, v in THEMES.items()
+        },
+    }
+    return JSONResponse(
+        content=payload,
+        headers={
+            # Themes barely change — cache aggressively
+            "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=86400",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.get("/api/articles")
+def get_articles():
+    articles = fetch_all()
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(articles),
+        "articles": articles,
+    }
+    return JSONResponse(
+        content=payload,
+        headers={
+            # Edge-cache 5 min; serve stale up to 60 s while revalidating
+            "Cache-Control": "public, s-maxage=300, stale-while-revalidate=60",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
