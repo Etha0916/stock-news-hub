@@ -19,7 +19,7 @@ from time import mktime
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 
 # Make repo-root modules (config.py, classify.py) importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,7 +113,23 @@ def fetch_all() -> list[dict]:
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Fin-Tech News Hub API")
+app = FastAPI(title="Fin-Tech News Hub API", docs_url=None, redoc_url=None)
+
+DOCS_DIR = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "docs"
+))
+INDEX_HTML = os.path.join(DOCS_DIR, "index.html")
+
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    """Serve the static frontend at /."""
+    if os.path.isfile(INDEX_HTML):
+        return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
+    return HTMLResponse(
+        "<h1>News Hub</h1><p>Frontend not bundled — open /api/articles directly.</p>",
+        status_code=200,
+    )
 
 
 @app.get("/api/themes")
