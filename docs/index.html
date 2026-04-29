@@ -105,12 +105,21 @@ const collapsedGroups = new Set();
 
 const tr = (obj) => lang === "zh" ? obj.label_zh : obj.label_en;
 
+// Try the dynamic API first (Vercel deployment), fall back to static
+// JSON files (GitHub Pages deployment / local `python -m http.server`).
+async function fetchSmart(apiPath, staticPath) {
+  try {
+    const res = await fetch(apiPath, { cache: "no-store" });
+    if (res.ok) return await res.json();
+  } catch (_) { /* fall through */ }
+  const res = await fetch(`${staticPath}?v=${Date.now()}`);
+  return await res.json();
+}
+
 async function loadData() {
-  // Cache-bust so we always pick up the latest Pages deployment
-  const v = Date.now();
   const [t, a] = await Promise.all([
-    fetch(`./data/themes.json?v=${v}`).then(r => r.json()),
-    fetch(`./data/articles.json?v=${v}`).then(r => r.json()),
+    fetchSmart("/api/themes",   "./data/themes.json"),
+    fetchSmart("/api/articles", "./data/articles.json"),
   ]);
   groups = t.groups;
   themes = t.themes;

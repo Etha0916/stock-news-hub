@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "outputDirectory": "docs",
+  "functions": {
+    "api/articles.py": {
+      "maxDuration": 30
+    },
+    "api/themes.py": {
+      "maxDuration": 5
+    }
+  }
+}
