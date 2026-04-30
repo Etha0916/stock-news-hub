@@ -3,12 +3,17 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.venv/
+venv/
 
-# Local-dev / Plan A artefacts (no longer used)
+# Local-only artefacts
 news.db
+docs/data/articles.json
+docs/data/themes.json
+
+# Phase A legacy (still in repo for reference, not actively used)
 app.py
-db.py
-ingest.py
+build.py
 static/
 
 # Editor / OS
@@ -17,7 +22,6 @@ static/
 .vscode/
 *.swp
 
-# Generated data — committed to the build artifact, not main branch
-# (uncomment if you decide to also commit them on main)
-# docs/data/articles.json
-# docs/data/themes.json
+# Secrets
+.env
+.env.local
