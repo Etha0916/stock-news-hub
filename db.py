@@ -33,7 +33,17 @@ def _db_url() -> str:
 
 @contextmanager
 def get_conn():
-    conn = psycopg.connect(_db_url(), row_factory=dict_row)
+    url = _db_url()
+    # Sanity check the URL — fail fast with a useful error if it's the wrong shape.
+    # GitHub Actions has no IPv6, so the Direct connection (port 5432) hangs forever.
+    # Always use the Transaction Pooler (port 6543).
+    if ":5432/" in url and "pooler.supabase.com" not in url:
+        raise RuntimeError(
+            "DATABASE_URL points to Supabase Direct (port 5432). "
+            "GitHub Actions runners are IPv4-only — Direct connections will hang. "
+            "Use the Transaction Pooler URL (port 6543, host pooler.supabase.com)."
+        )
+    conn = psycopg.connect(url, row_factory=dict_row, connect_timeout=10)
     try:
         yield conn
         conn.commit()
