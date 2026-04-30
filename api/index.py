@@ -1,119 +1,36 @@
 """
 api/index.py — Vercel serverless backend (FastAPI).
 
-Exposes:
-    GET /api/themes    — taxonomy (groups + themes)
-    GET /api/articles  — on-demand RSS fetch + classify
+Reads articles from Supabase (no RSS fetch in the request path), so responses
+are 50–200 ms even on cache miss. RSS ingestion is decoupled into ingest.py
+which runs on GitHub Actions cron.
 
-Both responses set HTTP cache headers so Vercel's edge CDN caches them and the
-function only actually runs on cache miss.
+Routes:
+    GET /                — serves docs/index.html (the SPA)
+    GET /api/themes      — taxonomy (groups + themes from config.py)
+    GET /api/articles    — articles from DB, optionally filtered + paginated
+    GET /api/health      — DB stats
 """
 from __future__ import annotations
 
 import os
 import sys
-import re
-import hashlib
 from datetime import datetime, timezone
-from time import mktime
-from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 
-# Make repo-root modules (config.py, classify.py) importable
+# Make repo-root modules importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import feedparser  # noqa: E402
-
-from config import RSS_SOURCES, THEMES, THEME_GROUPS  # noqa: E402
-from classify import classify  # noqa: E402
+from config import THEMES, THEME_GROUPS  # noqa: E402
+from db import query_articles, stats  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Helpers (copied/adapted from build.py)
-# ---------------------------------------------------------------------------
-_TAG_RE = re.compile(r"<[^>]+>")
-_ENTITIES = {"&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
-             "&quot;": '"', "&#39;": "'"}
-
-
-def _strip_html(s: str) -> str:
-    if not s:
-        return ""
-    s = _TAG_RE.sub("", s)
-    for k, v in _ENTITIES.items():
-        s = s.replace(k, v)
-    return s.strip()
-
-
-def _hash_url(url: str) -> str:
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-
-
-def _parse_date(entry) -> str:
-    for attr in ("published_parsed", "updated_parsed"):
-        v = getattr(entry, attr, None)
-        if v:
-            try:
-                return datetime.fromtimestamp(mktime(v), tz=timezone.utc).isoformat()
-            except Exception:
-                pass
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _fetch_one(source: dict) -> list[dict]:
-    feed = feedparser.parse(source["url"])
-    out = []
-    for entry in feed.entries:
-        link = entry.get("link", "")
-        title = _strip_html(entry.get("title", ""))
-        summary = _strip_html(entry.get("summary", "") or entry.get("description", ""))
-        if not link or not title:
-            continue
-        text = f"{title}. {summary}"
-        result = classify(text)
-        if not result["labels"]:
-            continue
-        out.append({
-            "id": _hash_url(link),
-            "url": link,
-            "title": title,
-            "summary": summary[:600],
-            "published": _parse_date(entry),
-            "source": source["name"],
-            "labels": result["labels"],
-        })
-    return out
-
-
-def _safe_fetch(source: dict) -> list[dict]:
-    try:
-        return _fetch_one(source)
-    except Exception as e:
-        print(f"[articles] {source['name']} FAILED: {e}")
-        return []
-
-
-def fetch_all() -> list[dict]:
-    seen: set[str] = set()
-    articles: list[dict] = []
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        for arts in ex.map(_safe_fetch, RSS_SOURCES):
-            for a in arts:
-                if a["id"] not in seen:
-                    seen.add(a["id"])
-                    articles.append(a)
-    articles.sort(key=lambda a: a["published"], reverse=True)
-    return articles
-
-
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
-app = FastAPI(title="Fin-Tech News Hub API", docs_url=None, redoc_url=None)
+app = FastAPI(title="Fin-Tech News Hub API",
+              docs_url=None, redoc_url=None)
 
 DOCS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "docs"
@@ -121,17 +38,22 @@ DOCS_DIR = os.path.normpath(os.path.join(
 INDEX_HTML = os.path.join(DOCS_DIR, "index.html")
 
 
+# ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def root():
-    """Serve the static frontend at /."""
     if os.path.isfile(INDEX_HTML):
         return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
     return HTMLResponse(
-        "<h1>News Hub</h1><p>Frontend not bundled — open /api/articles directly.</p>",
+        "<h1>News Hub</h1><p>Frontend bundle missing — try /api/articles.</p>",
         status_code=200,
     )
 
 
+# ---------------------------------------------------------------------------
+# /api/themes — config-derived, basically static
+# ---------------------------------------------------------------------------
 @app.get("/api/themes")
 def get_themes():
     payload = {
@@ -140,7 +62,7 @@ def get_themes():
             k: {
                 "label_en": v["label_en"],
                 "label_zh": v["label_zh"],
-                "groups": v.get("groups", []),
+                "groups":   v.get("groups", []),
             }
             for k, v in THEMES.items()
         },
@@ -148,31 +70,66 @@ def get_themes():
     return JSONResponse(
         content=payload,
         headers={
-            # Themes barely change — cache aggressively
             "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=86400",
             "Access-Control-Allow-Origin": "*",
         },
     )
 
 
+# ---------------------------------------------------------------------------
+# /api/articles — DB read
+# ---------------------------------------------------------------------------
 @app.get("/api/articles")
-def get_articles():
-    articles = fetch_all()
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "count": len(articles),
-        "articles": articles,
-    }
+def get_articles(
+    themes: str | None = Query(default=None,
+                                description="Comma-separated theme keys"),
+    days: int = Query(default=14, ge=1, le=90),
+    limit: int = Query(default=500, ge=1, le=2000),
+):
+    theme_list = (
+        [t.strip() for t in themes.split(",") if t.strip()]
+        if themes else None
+    )
+    rows = query_articles(theme_list, days=days, limit=limit)
+
+    articles = [{
+        "id":        r["id"],
+        "url":       r["url"],
+        "title":     r["title"],
+        "summary":   r["summary"],
+        "published": r["published_at"].isoformat() if r["published_at"] else None,
+        "source":    r["source"],
+        "labels":    r["labels"],
+    } for r in rows]
+
     return JSONResponse(
-        content=payload,
+        content={
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "count":      len(articles),
+            "articles":   articles,
+        },
         headers={
-            # Edge-cache 5 min; serve stale up to 60 s while revalidating
-            "Cache-Control": "public, s-maxage=300, stale-while-revalidate=60",
+            # 2 min edge cache + 1 min stale-while-revalidate.
+            # Ingest runs every ~10 min, so users see at most ~3 min stale data.
+            "Cache-Control": "public, s-maxage=120, stale-while-revalidate=60",
             "Access-Control-Allow-Origin": "*",
         },
     )
 
 
+# ---------------------------------------------------------------------------
+# /api/health — operational sanity check
+# ---------------------------------------------------------------------------
 @app.get("/api/health")
 def health():
-    return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
+    try:
+        return {
+            "ok": True,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "db": stats(),
+        }
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": str(e)},
+        )
