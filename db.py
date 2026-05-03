@@ -64,14 +64,16 @@ def upsert_article(conn, article: dict) -> str:
     Insert if URL is new; skip if URL already exists. Returns:
         'inserted' — newly written
         'duplicate' — url_hash already in DB, no action
+
+    `article` may carry an optional 'simhash' (signed 64-bit BIGINT-safe int).
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO articles
               (url_hash, url, title, summary, published_at,
-               source, labels, scores)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               source, labels, scores, simhash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url_hash) DO NOTHING
             RETURNING id
             """,
@@ -84,9 +86,27 @@ def upsert_article(conn, article: dict) -> str:
                 article["source"],
                 article["labels"],
                 Jsonb(article["scores"]),
+                article.get("simhash"),
             ),
         )
         return "inserted" if cur.fetchone() else "duplicate"
+
+
+def load_recent_simhashes(conn, hours: int = 24) -> list[int]:
+    """
+    Pull simhashes from the last `hours` for the in-memory dedup pool.
+    Returned values are signed BIGINTs as stored in Postgres.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT simhash FROM articles
+            WHERE published_at > NOW() - %s::interval
+              AND simhash IS NOT NULL
+            """,
+            (f"{int(hours)} hours",),
+        )
+        return [row["simhash"] for row in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------

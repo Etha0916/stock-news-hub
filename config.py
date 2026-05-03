@@ -23,6 +23,10 @@ THEMES = {
         "groups": ["mag7"], "label_en": "AAPL", "label_zh": "AAPL",
         "keywords_high": ["Apple", "AAPL", "蘋果"],
         "keywords_med":  ["iPhone", "iPad", "MacBook", "Tim Cook", "App Store"],
+        "keywords_neg": [
+            ("apple pie", 3.0), ("apple orchard", 3.0), ("apple farm", 3.0),
+            ("Big Apple", 2.0),
+        ],
     },
     "msft": {
         "groups": ["mag7"], "label_en": "MSFT", "label_zh": "MSFT",
@@ -38,11 +42,19 @@ THEMES = {
         "groups": ["mag7"], "label_en": "AMZN", "label_zh": "AMZN",
         "keywords_high": ["Amazon", "AMZN", "亞馬遜"],
         "keywords_med":  ["AWS", "Andy Jassy", "Bezos", "Prime Video"],
+        "keywords_neg": [
+            ("Amazon rainforest", 4.0), ("Amazon river", 4.0),
+            ("Amazon basin", 3.0), ("Amazon jungle", 3.0),
+        ],
     },
     "meta": {
         "groups": ["mag7"], "label_en": "META", "label_zh": "META",
         "keywords_high": ["Meta Platforms", "Facebook", "Instagram", "WhatsApp"],
         "keywords_med":  ["Zuckerberg", "Threads", "Reality Labs", "META"],
+        "keywords_neg": [
+            ("metadata", 2.5), ("metaphor", 3.0), ("meta-analysis", 3.0),
+            ("meta tag", 2.5), ("meta description", 2.5),
+        ],
     },
     "nvda": {
         "groups": ["mag7"], "label_en": "NVDA", "label_zh": "NVDA",
@@ -77,6 +89,11 @@ THEMES = {
         # Deliberately exclude bare "SNAP" keyword — too noisy ("snap election" etc).
         "keywords_high": ["Snap Inc", "Snapchat"],
         "keywords_med":  ["Evan Spiegel", "Spectacles"],
+        "keywords_neg": [
+            ("snap election", 3.0), ("snap decision", 2.5),
+            ("food stamps", 4.0), ("oh snap", 2.0),
+            ("SNAP benefits", 4.0),  # food assistance program
+        ],
     },
 
     # === Standalone themes (no group — render flat) ================
@@ -92,6 +109,14 @@ THEMES = {
             "semiconductor", "chip", "wafer", "foundry", "lithography",
             "EUV", "fab", "nanometer",
             "晶圓", "晶片", "半導體", "代工", "先進製程", "封測",
+        ],
+        "keywords_neg": [
+            ("potato chip", 4.0), ("chocolate chip", 4.0), ("blue chip", 2.0),
+        ],
+        "keywords_co": [
+            (["chip", "Taiwan"], 1.5),
+            (["chip", "foundry"], 1.5),
+            (["晶片", "台灣"], 1.5),
         ],
     },
     "taiwan_tech": {
@@ -130,6 +155,14 @@ THEMES = {
             "rate cut", "rate hike", "interest rate", "monetary policy",
             "CPI", "PPI", "inflation",
             "降息", "升息", "利率", "通膨", "貨幣政策",
+        ],
+        "keywords_co": [
+            # Generic words like "rate" alone are noisy; pair with Fed/Powell to confirm
+            (["rate", "Fed"], 2.0),
+            (["rate", "Powell"], 2.0),
+            (["rate", "FOMC"], 2.0),
+            (["利率", "聯準會"], 2.0),
+            (["CPI", "inflation"], 1.0),
         ],
     },
 }
