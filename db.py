@@ -56,14 +56,16 @@ def get_conn():
 
 # ---------------------------------------------------------------------------
 # Write path — used by ingest.py
+# Caller is responsible for connection lifecycle (one conn for the whole
+# ingest run), so we don't pay 30 × connect-timeout if the DB is unreachable.
 # ---------------------------------------------------------------------------
-def upsert_article(article: dict) -> str:
+def upsert_article(conn, article: dict) -> str:
     """
     Insert if URL is new; skip if URL already exists. Returns:
         'inserted' — newly written
         'duplicate' — url_hash already in DB, no action
     """
-    with get_conn() as conn, conn.cursor() as cur:
+    with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO articles
