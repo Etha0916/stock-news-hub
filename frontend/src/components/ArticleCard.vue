@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { RouterLink } from "vue-router";
 import type { Article, Theme } from "@/types";
 import { useUiStore } from "@/stores/ui";
 import { useNewsStore } from "@/stores/news";
@@ -11,6 +12,15 @@ const props = defineProps<{ article: Article }>();
 const ui = useUiStore();
 const news = useNewsStore();
 const prefs = usePrefsStore();
+
+// A theme is a "ticker" iff it belongs to one of the stock-listing groups.
+// Used to decide whether a label badge becomes a clickable RouterLink to /ticker/:symbol.
+const TICKER_GROUPS = new Set(["mag7", "eln"]);
+function isTicker(themeKey: string): boolean {
+  const t = news.themes[themeKey];
+  if (!t || !t.groups) return false;
+  return t.groups.some((g) => TICKER_GROUPS.has(g));
+}
 
 const tr = (t: Theme) => (ui.lang === "zh" ? t.label_zh : t.label_en);
 
@@ -26,7 +36,6 @@ const dateText = computed(() => {
 const isRead = computed(() => prefs.isRead(props.article.id));
 
 function onTitleClick() {
-  // Mark as read when user opens the source link
   prefs.markRead(props.article.id);
 }
 </script>
@@ -64,13 +73,21 @@ function onTitleClick() {
           {{ article.summary }}
         </p>
         <div class="mt-2.5 flex flex-wrap gap-1.5">
-          <span
-            v-for="L in article.labels"
-            :key="L"
-            class="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 text-brand-subtle"
-          >
-            {{ news.themes[L] ? tr(news.themes[L]) : L }}
-          </span>
+          <template v-for="L in article.labels" :key="L">
+            <RouterLink
+              v-if="isTicker(L)"
+              :to="{ name: 'ticker', params: { symbol: L.toUpperCase() } }"
+              class="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 text-brand-subtle hover:bg-brand hover:text-white transition-colors"
+            >
+              {{ news.themes[L] ? tr(news.themes[L]) : L }}
+            </RouterLink>
+            <span
+              v-else
+              class="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 text-brand-subtle"
+            >
+              {{ news.themes[L] ? tr(news.themes[L]) : L }}
+            </span>
+          </template>
         </div>
       </div>
       <BookmarkButton :article="article" class="-mt-1 -mr-1 flex-shrink-0" />

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 # Make repo-root modules importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,14 +43,23 @@ INDEX_HTML = os.path.join(DOCS_DIR, "index.html")
 
 
 # ---------------------------------------------------------------------------
-# Frontend
+# Frontend (Vue SPA built by Vite into docs/)
+# Vite emits docs/index.html + docs/assets/<hashed>.js + .css
 # ---------------------------------------------------------------------------
+ASSETS_DIR = os.path.join(DOCS_DIR, "assets")
+
+# Mount /assets/* directly to docs/assets so Vite's hashed bundles are served
+# with proper cache headers and 200 responses (not via the catch-all).
+if os.path.isdir(ASSETS_DIR):
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
+
 @app.get("/", response_class=HTMLResponse)
 def root():
     if os.path.isfile(INDEX_HTML):
         return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
     return HTMLResponse(
-        "<h1>News Hub</h1><p>Frontend bundle missing — try /api/articles.</p>",
+        "<h1>News Hub</h1><p>Frontend bundle missing — run `npm run build`.</p>",
         status_code=200,
     )
 
@@ -299,3 +309,25 @@ def health():
             status_code=500,
             content={"ok": False, "error": str(e)},
         )
+
+
+# ---------------------------------------------------------------------------
+# SPA fallback (must be the LAST route — catches everything not matched above)
+#
+# Vue Router uses createWebHistory(), so direct hits to /ticker/NVDA or
+# /bookmarks need to return index.html (the client-side router takes over).
+# We also serve top-level static files like favicon.ico, robots.txt,
+# manifest.json from docs/ if they exist.
+# ---------------------------------------------------------------------------
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    # Specific files at docs/ root (favicon, robots, manifest, etc.)
+    if full_path:
+        candidate = os.path.normpath(os.path.join(DOCS_DIR, full_path))
+        # Defense: prevent path-traversal escaping DOCS_DIR
+        if candidate.startswith(DOCS_DIR) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+    # Otherwise it's a client-side route → serve the SPA shell
+    if os.path.isfile(INDEX_HTML):
+        return FileResponse(INDEX_HTML, media_type="text/html; charset=utf-8")
+    return HTMLResponse("Frontend not built yet", status_code=404)
