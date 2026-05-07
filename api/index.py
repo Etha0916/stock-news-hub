@@ -180,62 +180,60 @@ def get_quote(ticker: str):
 
 
 # ---------------------------------------------------------------------------
-# Yahoo Finance candle source.
-# Finnhub's /stock/candle was paywalled in 2024 (free tier returns 403 for US
-# stocks). Yahoo's public chart endpoint has no key requirement and no
-# meaningful rate limit at our scale. It's the same source that the `yfinance`
-# Python package wraps.
+# Stooq candle source.
+#   - No API key, no auth, no rate limits (at our scale)
+#   - Returns CSV: Date,Open,High,Low,Close,Volume (one daily bar per line)
+#   - URL pattern: https://stooq.com/q/d/l/?s={symbol}.us&i=d
+#   - Stable for 10+ years; common in quant open-source projects
+# Yahoo's chart endpoint is too aggressively rate-limited from Vercel IPs;
+# Finnhub paywalled candles in 2024. Stooq is the reliable middle ground.
 # ---------------------------------------------------------------------------
-_YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
-# Browser-like UA — Yahoo soft-blocks obvious bot strings
-_YAHOO_UA = (
+_STOOQ_BASE = "https://stooq.com/q/d/l"
+_BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
 
-def _days_to_yahoo_range(days: int) -> str:
-    if days <= 5:   return "5d"
-    if days <= 30:  return "1mo"
-    if days <= 90:  return "3mo"
-    if days <= 180: return "6mo"
-    if days <= 365: return "1y"
-    return "2y"
-
-
-def _yahoo_candles(symbol: str, days: int) -> list:
-    range_str = _days_to_yahoo_range(days)
-    url = f"{_YAHOO_CHART_BASE}/{symbol}?interval=1d&range={range_str}"
-    req = urllib.request.Request(url, headers={"User-Agent": _YAHOO_UA})
+def _stooq_candles(symbol: str, days: int) -> list:
+    """Fetch daily OHLCV from Stooq, return last `days` bars (oldest-first)."""
+    # US tickers on Stooq use a `.us` suffix
+    s = f"{symbol.lower()}.us"
+    url = f"{_STOOQ_BASE}/?s={s}&i=d"
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
     with urllib.request.urlopen(req, timeout=8) as resp:
-        body = json.loads(resp.read())
+        text = resp.read().decode("utf-8", errors="replace")
 
-    result_list = body.get("chart", {}).get("result") or []
-    if not result_list:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
         return []
-    r = result_list[0]
-    timestamps = r.get("timestamp") or []
-    quote = (r.get("indicators", {}).get("quote") or [{}])[0]
-    opens   = quote.get("open")   or []
-    highs   = quote.get("high")   or []
-    lows    = quote.get("low")    or []
-    closes  = quote.get("close")  or []
-    volumes = quote.get("volume") or []
 
+    # First line is the header: "Date,Open,High,Low,Close,Volume"
+    cutoff_ts = int(datetime.now(timezone.utc).timestamp()) - days * 86400
     out = []
-    for i, ts in enumerate(timestamps):
-        # Holidays / half-trading days produce None entries — skip
-        if i >= len(opens) or opens[i] is None:
+    for line in lines[1:]:
+        parts = line.split(",")
+        if len(parts) < 6:
             continue
-        out.append({
-            "time":   ts,
-            "open":   opens[i],
-            "high":   highs[i],
-            "low":    lows[i],
-            "close":  closes[i],
-            "volume": volumes[i] or 0,
-        })
+        try:
+            dt = datetime.strptime(parts[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            ts = int(dt.timestamp())
+            if ts < cutoff_ts:
+                continue
+            out.append({
+                "time":   ts,
+                "open":   float(parts[1]),
+                "high":   float(parts[2]),
+                "low":    float(parts[3]),
+                "close":  float(parts[4]),
+                "volume": int(parts[5]) if parts[5] and parts[5].isdigit() else 0,
+            })
+        except (ValueError, IndexError):
+            continue
+
+    # lightweight-charts wants oldest-first
+    out.sort(key=lambda c: c["time"])
     return out
 
 
@@ -245,15 +243,15 @@ def get_candles(
     resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
     days: int = Query(default=90, ge=1, le=365 * 2),
 ):
-    """OHLCV daily candles for K-line chart. Sourced from Yahoo Finance."""
+    """OHLCV daily candles for K-line chart. Sourced from Stooq."""
     sym = ticker.upper()
 
     try:
-        candles = _yahoo_candles(sym, days)
+        candles = _stooq_candles(sym, days)
     except Exception as e:
         return JSONResponse(
             status_code=502,
-            content={"error": f"yahoo_failed: {e}", "ticker": sym},
+            content={"error": f"stooq_failed: {e}", "ticker": sym},
         )
 
     if not candles:
