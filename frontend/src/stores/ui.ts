@@ -1,13 +1,10 @@
 /**
- * UI store — purely user-side state: language, filters, collapsed groups.
- * Persisted to localStorage so reload preserves selections.
- *
- * Note on Set: Vue's reactivity tracks .value reassignment, not in-place
- * Set mutations. So toggle helpers always replace the Set with a new instance.
+ * UI store — purely user-side state: language, filters, collapsed groups,
+ * sort mode. Persisted to localStorage so reload preserves selections.
  */
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Lang } from "@/types";
+import type { Lang, SortMode } from "@/types";
 
 export const useUiStore = defineStore(
   "ui",
@@ -15,6 +12,7 @@ export const useUiStore = defineStore(
     const lang = ref<Lang>("zh");
     const selectedThemes = ref<Set<string>>(new Set());
     const collapsedGroups = ref<Set<string>>(new Set());
+    const sortMode = ref<SortMode>("time");
 
     function toggleTheme(key: string) {
       const next = new Set(selectedThemes.value);
@@ -47,25 +45,31 @@ export const useUiStore = defineStore(
       lang.value = l;
     }
 
+    function setSortMode(m: SortMode) {
+      sortMode.value = m;
+    }
+
     return {
       lang,
       selectedThemes,
       collapsedGroups,
+      sortMode,
       toggleTheme,
       toggleGroup,
       toggleGroupCollapse,
       clearFilters,
       setLang,
+      setSortMode,
     };
   },
   {
-    // Sets aren't JSON-native, so we (de)serialize manually
     persist: {
       storage: localStorage,
       serializer: {
         serialize: (state: Record<string, unknown>) =>
           JSON.stringify({
             lang: state.lang,
+            sortMode: state.sortMode,
             selectedThemes: [...(state.selectedThemes as Set<string>)],
             collapsedGroups: [...(state.collapsedGroups as Set<string>)],
           }),
@@ -74,12 +78,14 @@ export const useUiStore = defineStore(
             const obj = JSON.parse(s);
             return {
               lang: (obj.lang as Lang) ?? "zh",
+              sortMode: (obj.sortMode as SortMode) ?? "time",
               selectedThemes: new Set<string>(obj.selectedThemes ?? []),
               collapsedGroups: new Set<string>(obj.collapsedGroups ?? []),
             };
           } catch {
             return {
               lang: "zh" as Lang,
+              sortMode: "time" as SortMode,
               selectedThemes: new Set<string>(),
               collapsedGroups: new Set<string>(),
             };

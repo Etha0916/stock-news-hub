@@ -18,7 +18,8 @@ import sys
 import json
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time as dtime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
@@ -35,6 +36,43 @@ from db import query_articles, stats  # noqa: E402
 
 app = FastAPI(title="Fin-Tech News Hub API",
               docs_url=None, redoc_url=None)
+
+
+# ---------------------------------------------------------------------------
+# Cache strategy — different freshness needs per endpoint.
+# Quote / intraday candles are aggressive during market hours, relaxed at night.
+# Themes (config-derived) cache for a day. Articles cache for a minute with
+# generous stale-while-revalidate so most visitors hit the edge.
+# ---------------------------------------------------------------------------
+_ET = ZoneInfo("America/New_York")  # auto handles DST
+
+
+def us_market_state(now_utc: datetime | None = None) -> str:
+    """Return one of: 'open', 'pre', 'after', 'closed'. ET-based, DST-aware."""
+    now = (now_utc or datetime.now(tz=timezone.utc)).astimezone(_ET)
+    if now.weekday() >= 5:
+        return "closed"
+    t = now.time()
+    if dtime(4, 0) <= t < dtime(9, 30):  return "pre"
+    if dtime(9, 30) <= t < dtime(16, 0): return "open"
+    if dtime(16, 0) <= t < dtime(20, 0): return "after"
+    return "closed"
+
+
+def quote_cache_seconds() -> int:
+    state = us_market_state()
+    if state == "open":   return 30
+    if state in ("pre", "after"):  return 120
+    return 3600  # closed: an hour is plenty
+
+
+def candle_cache_seconds(resolution: str) -> int:
+    state = us_market_state()
+    intraday = resolution in ("1", "5", "15", "30", "60")
+    if intraday:
+        return 60 if state == "open" else 600
+    # daily / weekly / monthly
+    return 300 if state == "open" else 21600  # 6h after close
 
 DOCS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "docs"
@@ -113,6 +151,7 @@ def get_articles(
         "published": r["published_at"].isoformat() if r["published_at"] else None,
         "source":    r["source"],
         "labels":    r["labels"],
+        "scores":    r.get("scores") or {},   # per-theme classifier scores
     } for r in rows]
 
     return JSONResponse(
@@ -122,9 +161,9 @@ def get_articles(
             "articles":   articles,
         },
         headers={
-            # 2 min edge cache + 1 min stale-while-revalidate.
-            # Ingest runs every ~10 min, so users see at most ~3 min stale data.
-            "Cache-Control": "public, s-maxage=120, stale-while-revalidate=60",
+            # 60s edge cache, 5min stale-while-revalidate. Ingest cron is ~10min,
+            # so most visitors hit the edge while a few trigger background revalidation.
+            "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
             "Access-Control-Allow-Origin": "*",
         },
     )
@@ -180,10 +219,11 @@ def get_quote(ticker: str):
             if ts_unix else None
         ),
     }
+    s_max = quote_cache_seconds()
     return JSONResponse(
         content=payload,
         headers={
-            "Cache-Control": "public, s-maxage=60, stale-while-revalidate=30",
+            "Cache-Control": f"public, s-maxage={s_max}, stale-while-revalidate={s_max * 4}",
             "Access-Control-Allow-Origin": "*",
         },
     )
@@ -254,21 +294,77 @@ def _twelve_candles(symbol: str, days: int) -> list:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Yahoo Finance fallback. Same chart endpoint we tried before — when
+# Twelve Data fails, we still try Yahoo. Often works on a retry from a
+# different Vercel region even if the previous call 429'd.
+# ---------------------------------------------------------------------------
+_YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+
+def _days_to_yahoo_range(days: int) -> str:
+    if days <= 5:   return "5d"
+    if days <= 30:  return "1mo"
+    if days <= 90:  return "3mo"
+    if days <= 180: return "6mo"
+    if days <= 365: return "1y"
+    return "2y"
+
+
+def _yahoo_candles(symbol: str, days: int) -> list:
+    range_str = _days_to_yahoo_range(days)
+    url = f"{_YAHOO_CHART}/{symbol}?interval=1d&range={range_str}"
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        body = json.loads(resp.read())
+
+    rs = body.get("chart", {}).get("result") or []
+    if not rs:
+        return []
+    r = rs[0]
+    ts_arr = r.get("timestamp") or []
+    q = (r.get("indicators", {}).get("quote") or [{}])[0]
+    o, h, l, c, v = (q.get(k) or [] for k in ("open", "high", "low", "close", "volume"))
+    out = []
+    for i, ts in enumerate(ts_arr):
+        if i >= len(o) or o[i] is None:
+            continue
+        out.append({"time": ts, "open": o[i], "high": h[i],
+                    "low": l[i], "close": c[i], "volume": v[i] or 0})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fallback chain. Order matters: paid quota first, free fallbacks after.
+# Returns (candles, source_name). Raises if every provider fails.
+# ---------------------------------------------------------------------------
+def _candles_with_fallback(symbol: str, days: int) -> tuple[list, str, list[str]]:
+    errors: list[str] = []
+    for name, fn in [("twelvedata", _twelve_candles), ("yahoo", _yahoo_candles)]:
+        try:
+            data = fn(symbol, days)
+            if data:
+                return data, name, errors
+            errors.append(f"{name}: empty")
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+    return [], "none", errors
+
+
 @app.get("/api/candles/{ticker}")
 def get_candles(
     ticker: str,
     resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
     days: int = Query(default=90, ge=1, le=365 * 2),
 ):
-    """OHLCV daily candles for K-line chart. Sourced from Twelve Data."""
+    """OHLCV daily candles. Falls back through provider chain on failure."""
     sym = ticker.upper()
+    candles, source, errors = _candles_with_fallback(sym, days)
 
-    try:
-        candles = _twelve_candles(sym, days)
-    except Exception as e:
+    if not candles:
         return JSONResponse(
             status_code=502,
-            content={"error": f"twelvedata_failed: {e}", "ticker": sym},
+            content={"error": "all_providers_failed", "ticker": sym, "tried": errors},
         )
 
     if not candles:
@@ -277,17 +373,16 @@ def get_candles(
             content={"error": "no_data", "ticker": sym},
         )
 
-    if not candles:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "no_data", "ticker": sym},
-        )
-
-    cache_max = 300 if resolution in ("D", "W", "M") else 60
+    s_max = candle_cache_seconds(resolution)
     return JSONResponse(
-        content={"ticker": sym, "resolution": resolution, "candles": candles},
+        content={
+            "ticker": sym,
+            "resolution": resolution,
+            "candles": candles,
+            "source": source,  # observability — which provider answered
+        },
         headers={
-            "Cache-Control": f"public, s-maxage={cache_max}, stale-while-revalidate=60",
+            "Cache-Control": f"public, s-maxage={s_max}, stale-while-revalidate={s_max * 6}",
             "Access-Control-Allow-Origin": "*",
         },
     )

@@ -129,7 +129,7 @@ def query_articles(
             cur.execute(
                 """
                 SELECT id, url, title, summary, published_at,
-                       source, labels
+                       source, labels, scores
                 FROM articles
                 WHERE published_at > NOW() - %s::interval
                   AND labels && %s
@@ -142,7 +142,7 @@ def query_articles(
             cur.execute(
                 """
                 SELECT id, url, title, summary, published_at,
-                       source, labels
+                       source, labels, scores
                 FROM articles
                 WHERE published_at > NOW() - %s::interval
                 ORDER BY published_at DESC

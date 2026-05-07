@@ -24,7 +24,7 @@ const ui = useUiStore();
     </div>
 
     <div
-      v-else-if="news.filteredArticles.length === 0"
+      v-else-if="news.displayedArticles.length === 0"
       class="text-center py-16 text-ink-low"
     >
       {{ ui.lang === "zh" ? "暫無符合條件的文章" : "No matching articles" }}
@@ -32,7 +32,7 @@ const ui = useUiStore();
 
     <div v-else class="space-y-3">
       <ArticleCard
-        v-for="article in news.filteredArticles"
+        v-for="article in news.displayedArticles"
         :key="article.id"
         :article="article"
       />

@@ -4,6 +4,7 @@ import { useNewsStore } from "@/stores/news";
 import { useUiStore } from "@/stores/ui";
 import SidebarFilter from "@/components/SidebarFilter.vue";
 import ArticleFeed from "@/components/ArticleFeed.vue";
+import SortToggle from "@/components/SortToggle.vue";
 
 const news = useNewsStore();
 const ui = useUiStore();
@@ -34,10 +35,11 @@ setInterval(() => {
 
 <template>
   <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3 sm:py-5">
-    <div class="flex items-center text-xs text-ink-low mb-3 gap-3">
+    <div class="flex items-center text-xs text-ink-low mb-3 gap-3 flex-wrap">
       <span>{{ stats }}</span>
+      <SortToggle class="ml-auto" />
       <button
-        class="ml-auto px-3 py-1.5 rounded-md bg-brand hover:bg-brand-dark text-white disabled:bg-surface-2 disabled:cursor-wait"
+        class="px-3 py-1.5 rounded-md bg-brand hover:bg-brand-dark text-white disabled:bg-surface-2 disabled:cursor-wait"
         :disabled="news.loading"
         @click="news.fetchAll()"
       >

@@ -28,7 +28,10 @@ export interface Article {
   published: string | null; // ISO 8601
   source: string;
   labels: string[];
+  scores?: Record<string, number>; // per-theme classifier scores
 }
+
+export type SortMode = "time" | "relevance";
 
 export interface ArticlesPayload {
   updated_at: string;
