@@ -180,15 +180,17 @@ def get_quote(ticker: str):
 
 
 # ---------------------------------------------------------------------------
-# Stooq candle source.
-#   - No API key, no auth, no rate limits (at our scale)
-#   - Returns CSV: Date,Open,High,Low,Close,Volume (one daily bar per line)
-#   - URL pattern: https://stooq.com/q/d/l/?s={symbol}.us&i=d
-#   - Stable for 10+ years; common in quant open-source projects
-# Yahoo's chart endpoint is too aggressively rate-limited from Vercel IPs;
-# Finnhub paywalled candles in 2024. Stooq is the reliable middle ground.
+# Twelve Data candle source.
+#   - 800 calls/day free tier, 8 calls/minute
+#   - With our 5-min edge cache, 11 tickers × 1 day worst-case ~110 calls/day
+#   - Returns JSON, newest-first; we flip oldest-first for lightweight-charts
+# Why not the others:
+#   Finnhub /stock/candle  → paywalled (2024)
+#   Yahoo  /v8/finance/chart → 429 from Vercel IPs
+#   Stooq  daily CSV       → now requires captcha-issued apikey
 # ---------------------------------------------------------------------------
-_STOOQ_BASE = "https://stooq.com/q/d/l"
+TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+_TWELVE_BASE = "https://api.twelvedata.com"
 _BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -196,42 +198,48 @@ _BROWSER_UA = (
 )
 
 
-def _stooq_fetch_raw(symbol: str) -> str:
-    """Return raw Stooq CSV body for diagnosis."""
-    s = f"{symbol.lower()}.us"
-    url = f"{_STOOQ_BASE}/?s={s}&i=d"
+def _twelve_candles(symbol: str, days: int) -> list:
+    if not TWELVE_DATA_KEY:
+        raise RuntimeError("TWELVE_DATA_API_KEY env var is not set")
+
+    # outputsize = number of bars; cap at 5000 (API max)
+    outputsize = min(max(days, 5), 5000)
+    params = {
+        "symbol":     symbol,
+        "interval":   "1day",
+        "outputsize": str(outputsize),
+        "apikey":     TWELVE_DATA_KEY,
+        "format":     "JSON",
+    }
+    url = f"{_TWELVE_BASE}/time_series?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read())
 
+    if data.get("status") != "ok":
+        raise RuntimeError(
+            f"twelvedata: {data.get('code', '?')} {data.get('message', 'unknown')}"
+        )
 
-def _parse_stooq_csv(text: str, days: int) -> list:
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if len(lines) < 2:
-        return []
-
-    cutoff_ts = int(datetime.now(timezone.utc).timestamp()) - days * 86400
+    values = data.get("values") or []
     out = []
-    for line in lines[1:]:
-        parts = line.split(",")
-        if len(parts) < 6:
-            continue
+    for v in values:
         try:
-            dt = datetime.strptime(parts[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            ts = int(dt.timestamp())
-            if ts < cutoff_ts:
-                continue
+            dt = datetime.strptime(v["datetime"], "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
             out.append({
-                "time":   ts,
-                "open":   float(parts[1]),
-                "high":   float(parts[2]),
-                "low":    float(parts[3]),
-                "close":  float(parts[4]),
-                "volume": int(parts[5]) if parts[5] and parts[5].isdigit() else 0,
+                "time":   int(dt.timestamp()),
+                "open":   float(v["open"]),
+                "high":   float(v["high"]),
+                "low":    float(v["low"]),
+                "close":  float(v["close"]),
+                "volume": int(float(v.get("volume") or 0)),
             })
-        except (ValueError, IndexError):
+        except (KeyError, ValueError):
             continue
 
+    # API returns newest-first; lightweight-charts wants oldest-first
     out.sort(key=lambda c: c["time"])
     return out
 
@@ -242,28 +250,21 @@ def get_candles(
     resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
     days: int = Query(default=90, ge=1, le=365 * 2),
 ):
-    """OHLCV daily candles for K-line chart. Sourced from Stooq."""
+    """OHLCV daily candles for K-line chart. Sourced from Twelve Data."""
     sym = ticker.upper()
 
     try:
-        raw = _stooq_fetch_raw(sym)
+        candles = _twelve_candles(sym, days)
     except Exception as e:
         return JSONResponse(
             status_code=502,
-            content={"error": f"stooq_failed: {e}", "ticker": sym},
+            content={"error": f"twelvedata_failed: {e}", "ticker": sym},
         )
 
-    candles = _parse_stooq_csv(raw, days)
     if not candles:
-        # Diagnostic: include first chunk of raw response so we can see WHY
         return JSONResponse(
             status_code=404,
-            content={
-                "error": "no_data",
-                "ticker": sym,
-                "raw_preview": raw[:300],
-                "raw_lines": len([ln for ln in raw.splitlines() if ln.strip()]),
-            },
+            content={"error": "no_data", "ticker": sym},
         )
 
     if not candles:
