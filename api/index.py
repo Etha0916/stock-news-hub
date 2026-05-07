@@ -196,20 +196,20 @@ _BROWSER_UA = (
 )
 
 
-def _stooq_candles(symbol: str, days: int) -> list:
-    """Fetch daily OHLCV from Stooq, return last `days` bars (oldest-first)."""
-    # US tickers on Stooq use a `.us` suffix
+def _stooq_fetch_raw(symbol: str) -> str:
+    """Return raw Stooq CSV body for diagnosis."""
     s = f"{symbol.lower()}.us"
     url = f"{_STOOQ_BASE}/?s={s}&i=d"
     req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
     with urllib.request.urlopen(req, timeout=8) as resp:
-        text = resp.read().decode("utf-8", errors="replace")
+        return resp.read().decode("utf-8", errors="replace")
 
+
+def _parse_stooq_csv(text: str, days: int) -> list:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if len(lines) < 2:
         return []
 
-    # First line is the header: "Date,Open,High,Low,Close,Volume"
     cutoff_ts = int(datetime.now(timezone.utc).timestamp()) - days * 86400
     out = []
     for line in lines[1:]:
@@ -232,7 +232,6 @@ def _stooq_candles(symbol: str, days: int) -> list:
         except (ValueError, IndexError):
             continue
 
-    # lightweight-charts wants oldest-first
     out.sort(key=lambda c: c["time"])
     return out
 
@@ -247,11 +246,24 @@ def get_candles(
     sym = ticker.upper()
 
     try:
-        candles = _stooq_candles(sym, days)
+        raw = _stooq_fetch_raw(sym)
     except Exception as e:
         return JSONResponse(
             status_code=502,
             content={"error": f"stooq_failed: {e}", "ticker": sym},
+        )
+
+    candles = _parse_stooq_csv(raw, days)
+    if not candles:
+        # Diagnostic: include first chunk of raw response so we can see WHY
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "no_data",
+                "ticker": sym,
+                "raw_preview": raw[:300],
+                "raw_lines": len([ln for ln in raw.splitlines() if ln.strip()]),
+            },
         )
 
     if not candles:
