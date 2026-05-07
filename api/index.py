@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import os
 import sys
+import json
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Query
@@ -112,6 +115,115 @@ def get_articles(
             # 2 min edge cache + 1 min stale-while-revalidate.
             # Ingest runs every ~10 min, so users see at most ~3 min stale data.
             "Cache-Control": "public, s-maxage=120, stale-while-revalidate=60",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Finnhub proxy — quote + candles
+# We proxy Finnhub server-side so:
+#   (a) the API key never reaches the browser
+#   (b) edge cache amortizes Finnhub rate-limit (60 calls/min on free tier)
+# ---------------------------------------------------------------------------
+FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "")
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+
+def _finnhub_get(path: str, params: dict) -> dict:
+    if not FINNHUB_KEY:
+        raise RuntimeError("FINNHUB_API_KEY env var is not set")
+    params["token"] = FINNHUB_KEY
+    qs = urllib.parse.urlencode(params)
+    url = f"{FINNHUB_BASE}{path}?{qs}"
+    req = urllib.request.Request(url, headers={"User-Agent": "stock-news-hub/0.1"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read())
+
+
+@app.get("/api/quote/{ticker}")
+def get_quote(ticker: str):
+    """Real-time quote for a US-listed stock."""
+    sym = ticker.upper()
+    try:
+        data = _finnhub_get("/quote", {"symbol": sym})
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"finnhub_failed: {e}", "ticker": sym},
+        )
+
+    # Finnhub /quote keys: c=current, d=change, dp=change%, h=high, l=low,
+    # o=open, pc=prev close, t=timestamp
+    ts_unix = data.get("t") or 0
+    payload = {
+        "ticker": sym,
+        "price": data.get("c"),
+        "change": data.get("d"),
+        "change_pct": data.get("dp"),
+        "high": data.get("h"),
+        "low": data.get("l"),
+        "open": data.get("o"),
+        "prev_close": data.get("pc"),
+        "ts": (
+            datetime.fromtimestamp(ts_unix, tz=timezone.utc).isoformat()
+            if ts_unix else None
+        ),
+    }
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Cache-Control": "public, s-maxage=60, stale-while-revalidate=30",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
+@app.get("/api/candles/{ticker}")
+def get_candles(
+    ticker: str,
+    resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
+    days: int = Query(default=90, ge=1, le=365 * 2),
+):
+    """OHLCV candles for K-line chart. Default 90 days of daily bars."""
+    sym = ticker.upper()
+    now = int(datetime.now(timezone.utc).timestamp())
+    since = now - days * 86400
+
+    try:
+        data = _finnhub_get(
+            "/stock/candle",
+            {"symbol": sym, "resolution": resolution, "from": since, "to": now},
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"finnhub_failed: {e}", "ticker": sym},
+        )
+
+    if data.get("s") != "ok":
+        return JSONResponse(
+            status_code=404,
+            content={"error": "no_data", "ticker": sym, "raw_status": data.get("s")},
+        )
+
+    candles = []
+    times = data.get("t", []) or []
+    for i in range(len(times)):
+        candles.append({
+            "time":   times[i],
+            "open":   data["o"][i],
+            "high":   data["h"][i],
+            "low":    data["l"][i],
+            "close":  data["c"][i],
+            "volume": data["v"][i],
+        })
+
+    cache_max = 300 if resolution in ("D", "W", "M") else 60
+    return JSONResponse(
+        content={"ticker": sym, "resolution": resolution, "candles": candles},
+        headers={
+            "Cache-Control": f"public, s-maxage={cache_max}, stale-while-revalidate=60",
             "Access-Control-Allow-Origin": "*",
         },
     )

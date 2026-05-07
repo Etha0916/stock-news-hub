@@ -6,12 +6,17 @@ __pycache__/
 .venv/
 venv/
 
+# Node / Vite
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+
 # Local-only artefacts
 news.db
-docs/data/articles.json
-docs/data/themes.json
 
-# Phase A legacy (still in repo for reference, not actively used)
+# Phase A legacy
 app.py
 build.py
 static/
