@@ -179,45 +179,88 @@ def get_quote(ticker: str):
     )
 
 
+# ---------------------------------------------------------------------------
+# Yahoo Finance candle source.
+# Finnhub's /stock/candle was paywalled in 2024 (free tier returns 403 for US
+# stocks). Yahoo's public chart endpoint has no key requirement and no
+# meaningful rate limit at our scale. It's the same source that the `yfinance`
+# Python package wraps.
+# ---------------------------------------------------------------------------
+_YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+# Browser-like UA — Yahoo soft-blocks obvious bot strings
+_YAHOO_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+def _days_to_yahoo_range(days: int) -> str:
+    if days <= 5:   return "5d"
+    if days <= 30:  return "1mo"
+    if days <= 90:  return "3mo"
+    if days <= 180: return "6mo"
+    if days <= 365: return "1y"
+    return "2y"
+
+
+def _yahoo_candles(symbol: str, days: int) -> list:
+    range_str = _days_to_yahoo_range(days)
+    url = f"{_YAHOO_CHART_BASE}/{symbol}?interval=1d&range={range_str}"
+    req = urllib.request.Request(url, headers={"User-Agent": _YAHOO_UA})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        body = json.loads(resp.read())
+
+    result_list = body.get("chart", {}).get("result") or []
+    if not result_list:
+        return []
+    r = result_list[0]
+    timestamps = r.get("timestamp") or []
+    quote = (r.get("indicators", {}).get("quote") or [{}])[0]
+    opens   = quote.get("open")   or []
+    highs   = quote.get("high")   or []
+    lows    = quote.get("low")    or []
+    closes  = quote.get("close")  or []
+    volumes = quote.get("volume") or []
+
+    out = []
+    for i, ts in enumerate(timestamps):
+        # Holidays / half-trading days produce None entries — skip
+        if i >= len(opens) or opens[i] is None:
+            continue
+        out.append({
+            "time":   ts,
+            "open":   opens[i],
+            "high":   highs[i],
+            "low":    lows[i],
+            "close":  closes[i],
+            "volume": volumes[i] or 0,
+        })
+    return out
+
+
 @app.get("/api/candles/{ticker}")
 def get_candles(
     ticker: str,
     resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
     days: int = Query(default=90, ge=1, le=365 * 2),
 ):
-    """OHLCV candles for K-line chart. Default 90 days of daily bars."""
+    """OHLCV daily candles for K-line chart. Sourced from Yahoo Finance."""
     sym = ticker.upper()
-    now = int(datetime.now(timezone.utc).timestamp())
-    since = now - days * 86400
 
     try:
-        data = _finnhub_get(
-            "/stock/candle",
-            {"symbol": sym, "resolution": resolution, "from": since, "to": now},
-        )
+        candles = _yahoo_candles(sym, days)
     except Exception as e:
         return JSONResponse(
             status_code=502,
-            content={"error": f"finnhub_failed: {e}", "ticker": sym},
+            content={"error": f"yahoo_failed: {e}", "ticker": sym},
         )
 
-    if data.get("s") != "ok":
+    if not candles:
         return JSONResponse(
             status_code=404,
-            content={"error": "no_data", "ticker": sym, "raw_status": data.get("s")},
+            content={"error": "no_data", "ticker": sym},
         )
-
-    candles = []
-    times = data.get("t", []) or []
-    for i in range(len(times)):
-        candles.append({
-            "time":   times[i],
-            "open":   data["o"][i],
-            "high":   data["h"][i],
-            "low":    data["l"][i],
-            "close":  data["c"][i],
-            "volume": data["v"][i],
-        })
 
     cache_max = 300 if resolution in ("D", "W", "M") else 60
     return JSONResponse(
