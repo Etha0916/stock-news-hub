@@ -59,21 +59,21 @@ def get_conn():
 # Caller is responsible for connection lifecycle (one conn for the whole
 # ingest run), so we don't pay 30 × connect-timeout if the DB is unreachable.
 # ---------------------------------------------------------------------------
-def upsert_article(conn, article: dict) -> str:
+def upsert_article(conn, article: dict) -> int | None:
     """
-    Insert if URL is new; skip if URL already exists. Returns:
-        'inserted' — newly written
-        'duplicate' — url_hash already in DB, no action
+    Insert if URL is new; skip if URL already exists.
+    Returns the new article's id on insert, or None on duplicate.
 
-    `article` may carry an optional 'simhash' (signed 64-bit BIGINT-safe int).
+    `article` may carry optional 'simhash' (signed 64-bit BIGINT) and
+    'minhash_bytes' (raw bytes, see dedupe.serialize_minhash).
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO articles
               (url_hash, url, title, summary, published_at,
-               source, labels, scores, simhash)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+               source, labels, scores, simhash, minhash_bytes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url_hash) DO NOTHING
             RETURNING id
             """,
@@ -87,16 +87,15 @@ def upsert_article(conn, article: dict) -> str:
                 article["labels"],
                 Jsonb(article["scores"]),
                 article.get("simhash"),
+                article.get("minhash_bytes"),
             ),
         )
-        return "inserted" if cur.fetchone() else "duplicate"
+        row = cur.fetchone()
+        return row["id"] if row else None
 
 
 def load_recent_simhashes(conn, hours: int = 24) -> list[int]:
-    """
-    Pull simhashes from the last `hours` for the in-memory dedup pool.
-    Returned values are signed BIGINTs as stored in Postgres.
-    """
+    """Pull simhashes from the last `hours` for the in-memory dedup pool."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -107,6 +106,20 @@ def load_recent_simhashes(conn, hours: int = 24) -> list[int]:
             (f"{int(hours)} hours",),
         )
         return [row["simhash"] for row in cur.fetchall()]
+
+
+def load_recent_minhashes(conn, hours: int = 24) -> list[tuple[int, bytes]]:
+    """Pull (id, minhash_bytes) pairs from the last `hours` for LSH building."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, minhash_bytes FROM articles
+            WHERE published_at > NOW() - %s::interval
+              AND minhash_bytes IS NOT NULL
+            """,
+            (f"{int(hours)} hours",),
+        )
+        return [(row["id"], bytes(row["minhash_bytes"])) for row in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
