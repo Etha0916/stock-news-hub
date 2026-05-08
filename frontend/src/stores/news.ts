@@ -102,6 +102,17 @@ export const useNewsStore = defineStore("news", () => {
     }
   }
 
+  /**
+   * Called by the Realtime store when a new article INSERT event arrives.
+   * Returns true if the article was added (not a duplicate by id), false
+   * if it was already present.
+   */
+  function handleNewArticle(a: Article): boolean {
+    if (articles.value.some((x) => x.id === a.id)) return false;
+    articles.value = [a, ...articles.value];
+    return true;
+  }
+
   return {
     themes,
     groups,
@@ -112,5 +123,6 @@ export const useNewsStore = defineStore("news", () => {
     filteredArticles,
     displayedArticles,
     fetchAll,
+    handleNewArticle,
   };
 });

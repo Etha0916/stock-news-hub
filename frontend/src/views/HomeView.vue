@@ -2,12 +2,14 @@
 import { onMounted, computed } from "vue";
 import { useNewsStore } from "@/stores/news";
 import { useUiStore } from "@/stores/ui";
+import { useRealtimeStore } from "@/stores/realtime";
 import SidebarFilter from "@/components/SidebarFilter.vue";
 import ArticleFeed from "@/components/ArticleFeed.vue";
 import SortToggle from "@/components/SortToggle.vue";
 
 const news = useNewsStore();
 const ui = useUiStore();
+const realtime = useRealtimeStore();
 
 const stats = computed(() => {
   if (!news.updatedAt) return "";
@@ -23,11 +25,15 @@ const stats = computed(() => {
     : `${total} articles · updated ${when}`;
 });
 
+function showNewArticles() {
+  realtime.clearNewCount();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 onMounted(async () => {
   if (news.articles.length === 0) await news.fetchAll();
 });
 
-// Auto-refresh every 5 minutes while page is open
 setInterval(() => {
   if (!document.hidden) news.fetchAll();
 }, 5 * 60 * 1000);
@@ -35,6 +41,22 @@ setInterval(() => {
 
 <template>
   <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3 sm:py-5">
+    <!-- "Live: N new articles" banner — only shows when realtime delivers updates -->
+    <button
+      v-if="realtime.newCount > 0"
+      class="w-full mb-3 py-2 rounded-md bg-brand text-white text-sm flex items-center justify-center gap-2 hover:bg-brand-dark transition-colors animate-pulse-once"
+      @click="showNewArticles"
+    >
+      <span class="text-base">↑</span>
+      <span>
+        {{
+          ui.lang === "zh"
+            ? `${realtime.newCount} 篇新文章 — 點擊查看`
+            : `${realtime.newCount} new — click to view`
+        }}
+      </span>
+    </button>
+
     <div class="flex items-center text-xs text-ink-low mb-3 gap-3 flex-wrap">
       <span>{{ stats }}</span>
       <SortToggle class="ml-auto" />
@@ -61,3 +83,14 @@ setInterval(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+@keyframes pulse-once {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+.animate-pulse-once {
+  animation: pulse-once 0.6s ease-out;
+}
+</style>
