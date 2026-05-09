@@ -9,7 +9,8 @@ import urllib.parse
 # ---------------------------------------------------------------------------
 THEME_GROUPS = {
     "mag7": {"label_en": "Magnificent 7",   "label_zh": "美股七雄"},
-    "eln":  {"label_en": "ELN Underlyings", "label_zh": "ELN 標的"},
+    # "eln" removed — users now build their own ELN-like grouping via the
+    # custom-category feature in the frontend sidebar.
 }
 
 
@@ -62,39 +63,15 @@ THEMES = {
         "keywords_med":  ["Jensen Huang", "GeForce", "CUDA", "H100", "Blackwell", "B200"],
     },
     "tsla": {
-        # Shared between mag7 and eln
-        "groups": ["mag7", "eln"], "label_en": "TSLA", "label_zh": "TSLA",
+        "groups": ["mag7"], "label_en": "TSLA", "label_zh": "TSLA",
         "keywords_high": ["Tesla", "TSLA", "特斯拉"],
         "keywords_med":  ["Elon Musk", "Cybertruck", "Model 3", "Model Y", "Robotaxi", "FSD"],
     },
 
-    # === ELN underlyings ===========================================
-    "hims": {
-        "groups": ["eln"], "label_en": "HIMS", "label_zh": "HIMS",
-        "keywords_high": ["Hims & Hers", "Hims and Hers", "HIMS"],
-        "keywords_med":  ["GLP-1", "Andrew Dudum"],
-    },
-    "pltr": {
-        "groups": ["eln"], "label_en": "PLTR", "label_zh": "PLTR",
-        "keywords_high": ["Palantir", "PLTR"],
-        "keywords_med":  ["Alex Karp", "Karp", "Gotham"],
-    },
-    "mstr": {
-        "groups": ["eln"], "label_en": "MSTR", "label_zh": "MSTR",
-        "keywords_high": ["MicroStrategy", "Strategy Inc", "MSTR"],
-        "keywords_med":  ["Saylor", "Michael Saylor", "Bitcoin Treasury"],
-    },
-    "snap": {
-        "groups": ["eln"], "label_en": "SNAP", "label_zh": "SNAP",
-        # Deliberately exclude bare "SNAP" keyword — too noisy ("snap election" etc).
-        "keywords_high": ["Snap Inc", "Snapchat"],
-        "keywords_med":  ["Evan Spiegel", "Spectacles"],
-        "keywords_neg": [
-            ("snap election", 3.0), ("snap decision", 2.5),
-            ("food stamps", 4.0), ("oh snap", 2.0),
-            ("SNAP benefits", 4.0),  # food assistance program
-        ],
-    },
+    # NOTE: HIMS / PLTR / MSTR / SNAP previously sat under an "eln" preset
+    # group. They've been removed: users now create their own ELN-equivalent
+    # via the custom-category feature, and add tickers via the sidebar
+    # "+ 新增 ticker" input which dynamically registers them.
 
     # === Standalone themes (no group — render flat) ================
     "semi": {
@@ -187,9 +164,10 @@ def yahoo_finance_ticker_rss(ticker: str) -> str:
 # ---------------------------------------------------------------------------
 RSS_SOURCES = []
 
-# Yahoo Finance per-ticker feeds — Mag7 + ELN underlyings
-for ticker in ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
-               "HIMS", "PLTR", "MSTR", "SNAP"]:
+# Yahoo Finance per-ticker feeds — Mag7 only.
+# Other tickers (HIMS / PLTR / MSTR / SNAP / etc.) are added dynamically
+# through the watchlist registry — see ingest.build_dynamic_sources().
+for ticker in ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]:
     RSS_SOURCES.append({"name": f"Yahoo:{ticker}", "url": yahoo_finance_ticker_rss(ticker)})
 
 # Google News searches in English
@@ -203,10 +181,7 @@ EN_QUERIES = [
     "site:reuters.com semiconductor",
     "site:reuters.com Federal Reserve",
     "site:reuters.com artificial intelligence",
-    "Palantir OR PLTR earnings",
-    "MicroStrategy OR MSTR Bitcoin",
-    "Hims Hers Health HIMS",
-    "Snap Inc Snapchat earnings",
+    # (Former ELN-underlying searches removed — those tickers are user-managed now)
 ]
 for q in EN_QUERIES:
     RSS_SOURCES.append({"name": f"GoogleEN:{q[:40]}", "url": google_news_rss(q, "en")})
