@@ -33,6 +33,15 @@ export interface Article {
 
 export type SortMode = "time" | "relevance";
 
+/** A user-created group of tickers (like a private Mag7). Stored in
+ *  localStorage now; will move to server-side per-user in Phase 6. */
+export interface CustomCategory {
+  id: string;        // crypto.randomUUID()
+  name: string;      // user-chosen, e.g. "我的 AI 板塊"
+  symbols: string[]; // uppercase tickers, e.g. ["NVDA", "AAPL", "PLTR"]
+  createdAt: number; // ms epoch
+}
+
 export interface ArticlesPayload {
   updated_at: string;
   count: number;
