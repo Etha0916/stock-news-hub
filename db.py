@@ -188,3 +188,43 @@ def stats() -> dict:
             "oldest":  row["oldest"].isoformat() if row["oldest"] else None,
             "last_24h": row["last_24h"],
         }
+
+
+# ---------------------------------------------------------------------------
+# Watchlist (dynamic ticker registry)
+# ---------------------------------------------------------------------------
+def register_watchlist_ticker(conn, symbol: str) -> bool:
+    """Register a ticker. Returns True if newly inserted, False if it
+    already existed."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO watchlist_tickers (symbol)
+            VALUES (%s)
+            ON CONFLICT (symbol) DO NOTHING
+            RETURNING symbol
+            """,
+            (symbol.upper(),),
+        )
+        return cur.fetchone() is not None
+
+
+def load_watchlist_symbols(conn) -> list[str]:
+    """Return all registered watchlist tickers (uppercase)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT symbol FROM watchlist_tickers ORDER BY symbol")
+        return [row["symbol"] for row in cur.fetchall()]
+
+
+def touch_watchlist_ticker(conn, symbol: str, articles_added: int = 0) -> None:
+    """Update last_fetched_at + article_count after an ingest pass."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE watchlist_tickers
+            SET last_fetched_at = NOW(),
+                article_count   = article_count + %s
+            WHERE symbol = %s
+            """,
+            (articles_added, symbol.upper()),
+        )

@@ -30,8 +30,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from config import THEMES, THEME_GROUPS  # noqa: E402
-from db import query_articles, stats  # noqa: E402
+import re
+
+from config import THEMES, THEME_GROUPS, yahoo_finance_ticker_rss  # noqa: E402
+from db import (  # noqa: E402
+    query_articles,
+    stats,
+    register_watchlist_ticker,
+    load_watchlist_symbols,
+    get_conn,
+)
+from fastapi import Body  # noqa: E402
 
 
 app = FastAPI(title="Fin-Tech News Hub API",
@@ -404,6 +413,111 @@ def health():
             status_code=500,
             content={"ok": False, "error": str(e)},
         )
+
+
+# ---------------------------------------------------------------------------
+# /api/watchlist — dynamic ticker registry
+# ---------------------------------------------------------------------------
+_TICKER_RE = re.compile(r"^[A-Z]{1,6}$")
+
+
+@app.get("/api/watchlist")
+def list_watchlist():
+    """List all tickers registered in the global watchlist registry."""
+    try:
+        with get_conn() as conn:
+            symbols = load_watchlist_symbols(conn)
+        return JSONResponse(
+            content={"symbols": symbols},
+            headers={
+                "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/watchlist/register")
+def register_watchlist(payload: dict = Body(...)):
+    """
+    Register a US-listed ticker into the global watchlist registry.
+    On success, also triggers an inline RSS+classify pass for that ticker
+    so the user sees news immediately rather than waiting for the next cron.
+
+    Body: { "symbol": "BABA" }
+    """
+    raw = (payload.get("symbol") or "").strip().upper()
+    if not _TICKER_RE.match(raw):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_symbol", "detail": "1-6 letter US symbol"},
+        )
+
+    # Validate via Finnhub /quote — non-existent tickers return c=0
+    try:
+        quote = _finnhub_get("/quote", {"symbol": raw})
+        if not quote.get("c"):
+            return JSONResponse(
+                status_code=404,
+                content={"error": "ticker_not_found", "symbol": raw},
+            )
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "validation_failed", "detail": str(e)},
+        )
+
+    # Register in DB
+    newly_added = False
+    try:
+        with get_conn() as conn:
+            newly_added = register_watchlist_ticker(conn, raw)
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "db_register_failed", "detail": str(e)},
+        )
+
+    # Inline-fetch the Yahoo per-ticker RSS so the user immediately sees news.
+    # Lazy import to avoid pulling ingest deps at module load.
+    fresh_count = 0
+    try:
+        from ingest import fetch_one, safe_fetch  # noqa
+        from db import upsert_article  # noqa
+        from dedupe import simhash, to_signed_bigint, make_minhash, serialize_minhash  # noqa
+
+        source = {
+            "name": f"Yahoo:{raw}",
+            "url": yahoo_finance_ticker_rss(raw),
+        }
+        articles = safe_fetch(source)
+        with get_conn() as conn:
+            for art in articles:
+                text = art["title"] + " " + art.get("summary", "")
+                sh_unsigned = simhash(text)
+                art["simhash"] = to_signed_bigint(sh_unsigned)
+                art["minhash_bytes"] = serialize_minhash(make_minhash(text))
+                try:
+                    nid = upsert_article(conn, art)
+                    if nid is not None:
+                        fresh_count += 1
+                except Exception:
+                    pass  # ignore individual failures here
+    except Exception as e:
+        # Inline fetch failed — not fatal, the next cron will pick up
+        print(f"[watchlist/register] inline fetch failed for {raw}: {e}")
+
+    return JSONResponse(
+        content={
+            "ok":              True,
+            "symbol":          raw,
+            "newly_registered": newly_added,
+            "fresh_articles":  fresh_count,
+            "current_price":   quote.get("c"),
+        },
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 # ---------------------------------------------------------------------------

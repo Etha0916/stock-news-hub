@@ -24,13 +24,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import feedparser
 
-from config import RSS_SOURCES
+from config import RSS_SOURCES, yahoo_finance_ticker_rss
 from classify import classify
 from db import (
     get_conn,
     upsert_article,
     load_recent_simhashes,
     load_recent_minhashes,
+    load_watchlist_symbols,
 )
 from dedupe import (
     simhash,
@@ -81,8 +82,18 @@ def _parse_date(entry) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _ticker_from_source_name(source_name: str) -> str | None:
+    """Parse 'Yahoo:NVDA' → 'nvda'. Returns None if not a per-ticker source."""
+    if source_name.startswith("Yahoo:"):
+        sym = source_name.split(":", 1)[1].strip().lower()
+        if sym.isalpha() and 1 <= len(sym) <= 6:
+            return sym
+    return None
+
+
 def fetch_one(source: dict) -> list[dict]:
     feed = feedparser.parse(source["url"])
+    auto_label = _ticker_from_source_name(source["name"])
     out = []
     for entry in feed.entries:
         link = entry.get("link", "")
@@ -92,7 +103,16 @@ def fetch_one(source: dict) -> list[dict]:
             continue
         text = f"{title}. {summary}"
         result = classify(text)
-        if not result["labels"]:
+        labels = list(result["labels"])
+        scores = dict(result["scores"])
+
+        # Auto-tag from per-ticker sources (Yahoo:NVDA → 'nvda').
+        # Lets dynamic watchlist tickers like BABA tag without keyword config.
+        if auto_label and auto_label not in labels:
+            labels.append(auto_label)
+            scores.setdefault(auto_label, 3.0)  # match high-confidence weight
+
+        if not labels:
             continue
         out.append({
             "url_hash":  _hash_url(link),
@@ -101,9 +121,30 @@ def fetch_one(source: dict) -> list[dict]:
             "summary":   summary[:600],
             "published": _parse_date(entry),
             "source":    source["name"],
-            "labels":    result["labels"],
-            "scores":    result["scores"],
+            "labels":    labels,
+            "scores":    scores,
         })
+    return out
+
+
+def build_dynamic_sources(conn) -> list[dict]:
+    """Pull watchlist tickers from DB and emit Yahoo Finance RSS source entries."""
+    syms = load_watchlist_symbols(conn)
+    return [
+        {"name": f"Yahoo:{sym}", "url": yahoo_finance_ticker_rss(sym)}
+        for sym in syms
+    ]
+
+
+def merge_sources(static_sources: list[dict], dynamic_sources: list[dict]) -> list[dict]:
+    """Combine, dedupe by URL (some watchlist tickers may overlap with static)."""
+    seen = set()
+    out = []
+    for s in static_sources + dynamic_sources:
+        if s["url"] in seen:
+            continue
+        seen.add(s["url"])
+        out.append(s)
     return out
 
 
@@ -117,8 +158,7 @@ def safe_fetch(source: dict) -> list[dict]:
 
 def main() -> None:
     started = datetime.now(timezone.utc)
-    log(f"[ingest] starting at {started.isoformat()}; "
-        f"{len(RSS_SOURCES)} sources")
+    log(f"[ingest] starting at {started.isoformat()}")
 
     # ----- Phase 1: verify DB connection -----
     log("[ingest] testing DB connection...")
@@ -155,11 +195,22 @@ def main() -> None:
     log(f"[ingest] dedup pool — SimHash:{len(sh_pool)} MinHash:{len(mh_pool)} "
         f"(LSH bands={lsh.b}, rows/band={lsh.r})")
 
+    # ----- Phase 2.5: merge static + dynamic (watchlist) RSS sources -----
+    try:
+        with get_conn() as conn:
+            dyn = build_dynamic_sources(conn)
+        sources = merge_sources(RSS_SOURCES, dyn)
+        log(f"[ingest] sources — static:{len(RSS_SOURCES)} "
+            f"dynamic:{len(dyn)} merged:{len(sources)}")
+    except Exception as e:
+        log(f"[ingest] failed to load watchlist tickers (using static only): {e}")
+        sources = RSS_SOURCES
+
     # ----- Phase 3: parallel RSS fetch -----
     log("[ingest] fetching RSS sources in parallel...")
     with ThreadPoolExecutor(max_workers=12) as ex:
         all_articles: list[dict] = []
-        for arts in ex.map(safe_fetch, RSS_SOURCES):
+        for arts in ex.map(safe_fetch, sources):
             all_articles.extend(arts)
     log(f"[ingest] fetched {len(all_articles)} candidate articles")
 

@@ -13,13 +13,23 @@ const ui = useUiStore();
 const news = useNewsStore();
 const prefs = usePrefsStore();
 
-// A theme is a "ticker" iff it belongs to one of the stock-listing groups.
-// Used to decide whether a label badge becomes a clickable RouterLink to /ticker/:symbol.
+// A label key is a "ticker" iff:
+//   (a) it's in news.themes AND belongs to a stock-listing group (mag7/eln), OR
+//   (b) it's a 1-6 lowercase-letter label not registered in themes
+//       (= a custom watchlist ticker auto-tagged from per-ticker RSS).
+// Either way, badge becomes a clickable RouterLink to /ticker/:symbol.
 const TICKER_GROUPS = new Set(["mag7", "eln"]);
+const CUSTOM_TICKER_RE = /^[a-z]{1,6}$/;
 function isTicker(themeKey: string): boolean {
   const t = news.themes[themeKey];
-  if (!t || !t.groups) return false;
-  return t.groups.some((g) => TICKER_GROUPS.has(g));
+  if (t && t.groups) return t.groups.some((g) => TICKER_GROUPS.has(g));
+  if (!t && CUSTOM_TICKER_RE.test(themeKey)) return true; // custom watchlist ticker
+  return false;
+}
+
+function labelText(L: string): string {
+  const t = news.themes[L];
+  return t ? tr(t) : L.toUpperCase();
 }
 
 const tr = (t: Theme) => (ui.lang === "zh" ? t.label_zh : t.label_en);
@@ -79,13 +89,13 @@ function onTitleClick() {
               :to="{ name: 'ticker', params: { symbol: L.toUpperCase() } }"
               class="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 text-brand-subtle hover:bg-brand hover:text-white transition-colors"
             >
-              {{ news.themes[L] ? tr(news.themes[L]) : L }}
+              {{ labelText(L) }}
             </RouterLink>
             <span
               v-else
               class="text-[11px] px-2 py-0.5 rounded-full bg-surface-2 text-brand-subtle"
             >
-              {{ news.themes[L] ? tr(news.themes[L]) : L }}
+              {{ labelText(L) }}
             </span>
           </template>
         </div>
