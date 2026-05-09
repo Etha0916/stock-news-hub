@@ -77,7 +77,13 @@ export const useWatchlistStore = defineStore(
         }
         // Persist locally
         addLocal(s);
-        return { ok: true, ...data };
+        return {
+          ok: true,
+          symbol: data.symbol,
+          newly_registered: data.newly_registered,
+          fresh_articles: data.fresh_articles,
+          current_price: data.current_price,
+        };
       } catch (e) {
         return {
           ok: false,
