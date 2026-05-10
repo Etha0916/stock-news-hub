@@ -170,9 +170,10 @@ def get_articles(
             "articles":   articles,
         },
         headers={
-            # 60s edge cache, 5min stale-while-revalidate. Ingest cron is ~10min,
-            # so most visitors hit the edge while a few trigger background revalidation.
-            "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+            # 3 min edge cache, 10 min stale-while-revalidate. Realtime
+            # WebSocket pushes new articles directly to the client, so REST
+            # cache freshness is no longer the user's main path for updates.
+            "Cache-Control": "public, s-maxage=180, stale-while-revalidate=600",
             "Access-Control-Allow-Origin": "*",
         },
     )

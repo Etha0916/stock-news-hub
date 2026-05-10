@@ -108,7 +108,7 @@ function closeModal() {
 
 <template>
   <aside
-    class="bg-surface-1 rounded-xl p-4 md:sticky md:top-20 md:self-start"
+    class="bg-surface-1 rounded-xl p-4 md:sticky md:top-20 md:self-start md:max-h-[calc(100vh-6rem)] md:overflow-y-auto md:no-scrollbar"
   >
     <div class="flex items-center mb-2">
       <span

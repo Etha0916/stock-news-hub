@@ -7,15 +7,18 @@
  * rotation / sidebar collapse.
  */
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
-import {
-  createChart,
-  ColorType,
-  type IChartApi,
-  type ISeriesApi,
-  type CandlestickData,
-  type Time,
+// Type-only imports get erased at compile, so no runtime cost.
+import type {
+  IChartApi,
+  ISeriesApi,
+  CandlestickData,
+  Time,
 } from "lightweight-charts";
 import type { Candle } from "@/types";
+
+// `lightweight-charts` runtime (~140KB gzipped) is dynamically imported
+// inside build() so it only ships in the chunk loaded when the user
+// actually visits a /ticker/* route, not in the home-page bundle.
 
 const props = defineProps<{
   candles: Candle[];
@@ -38,14 +41,18 @@ function toLwc(c: Candle[]): CandlestickData[] {
   }));
 }
 
-function build() {
+async function build() {
   if (!container.value) return;
-  chart = createChart(container.value, {
+  // Dynamic import — Vite emits this in a separate chunk
+  const lwc = await import("lightweight-charts");
+  if (!container.value) return; // guard: component may have unmounted
+
+  chart = lwc.createChart(container.value, {
     autoSize: false,
     width: container.value.clientWidth,
     height: 320,
     layout: {
-      background: { type: ColorType.Solid, color: "#161a22" },
+      background: { type: lwc.ColorType.Solid, color: "#161a22" },
       textColor: "#9aa0a6",
     },
     grid: {
@@ -77,8 +84,8 @@ function build() {
   }
 }
 
-onMounted(() => {
-  build();
+onMounted(async () => {
+  await build();
   if (container.value) {
     resizeObserver = new ResizeObserver(() => {
       if (chart && container.value) {
