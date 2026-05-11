@@ -21,9 +21,12 @@ import urllib.request
 from datetime import datetime, timezone, time as dtime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+
+from rate_limit import rate_limit  # noqa: E402
 
 # Make repo-root modules importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -45,6 +48,31 @@ from fastapi import Body  # noqa: E402
 
 app = FastAPI(title="Fin-Tech News Hub API",
               docs_url=None, redoc_url=None)
+
+# ---------------------------------------------------------------------------
+# CORS — restrict to known origins. Add new domains here when a custom .com
+# is wired up (e.g. https://stocknewshub.com).
+# ---------------------------------------------------------------------------
+ALLOWED_ORIGINS = [
+    "https://stock-news-hub.vercel.app",  # production
+    "http://localhost:5173",              # local Vite dev
+    "http://127.0.0.1:5173",              # alt local
+]
+# Allow Vercel preview URLs (every PR gets its own *.vercel.app subdomain)
+import re as _re_cors
+PREVIEW_ORIGIN_RE = _re_cors.compile(
+    r"^https://stock-news-hub-.*\.vercel\.app$"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=PREVIEW_ORIGIN_RE.pattern,
+    allow_credentials=False,        # no cookies / auth yet
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=600,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +159,6 @@ def get_themes():
         content=payload,
         headers={
             "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=86400",
-            "Access-Control-Allow-Origin": "*",
         },
     )
 
@@ -174,7 +201,6 @@ def get_articles(
             # WebSocket pushes new articles directly to the client, so REST
             # cache freshness is no longer the user's main path for updates.
             "Cache-Control": "public, s-maxage=180, stale-while-revalidate=600",
-            "Access-Control-Allow-Origin": "*",
         },
     )
 
@@ -200,7 +226,10 @@ def _finnhub_get(path: str, params: dict) -> dict:
         return json.loads(resp.read())
 
 
-@app.get("/api/quote/{ticker}")
+@app.get(
+    "/api/quote/{ticker}",
+    dependencies=[Depends(rate_limit("quote", limit=30, window_s=60))],
+)
 def get_quote(ticker: str):
     """Real-time quote for a US-listed stock."""
     sym = ticker.upper()
@@ -234,7 +263,6 @@ def get_quote(ticker: str):
         content=payload,
         headers={
             "Cache-Control": f"public, s-maxage={s_max}, stale-while-revalidate={s_max * 4}",
-            "Access-Control-Allow-Origin": "*",
         },
     )
 
@@ -361,7 +389,10 @@ def _candles_with_fallback(symbol: str, days: int) -> tuple[list, str, list[str]
     return [], "none", errors
 
 
-@app.get("/api/candles/{ticker}")
+@app.get(
+    "/api/candles/{ticker}",
+    dependencies=[Depends(rate_limit("candles", limit=30, window_s=60))],
+)
 def get_candles(
     ticker: str,
     resolution: str = Query(default="D", pattern="^(1|5|15|30|60|D|W|M)$"),
@@ -393,7 +424,6 @@ def get_candles(
         },
         headers={
             "Cache-Control": f"public, s-maxage={s_max}, stale-while-revalidate={s_max * 6}",
-            "Access-Control-Allow-Origin": "*",
         },
     )
 
@@ -432,14 +462,17 @@ def list_watchlist():
             content={"symbols": symbols},
             headers={
                 "Cache-Control": "public, s-maxage=30, stale-while-revalidate=60",
-                "Access-Control-Allow-Origin": "*",
+    ,
             },
         )
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.post("/api/watchlist/register")
+@app.post(
+    "/api/watchlist/register",
+    dependencies=[Depends(rate_limit("register", limit=5, window_s=60))],
+)
 def register_watchlist(payload: dict = Body(...)):
     """
     Register a US-listed ticker into the global watchlist registry.
@@ -517,7 +550,6 @@ def register_watchlist(payload: dict = Body(...)):
             "fresh_articles":  fresh_count,
             "current_price":   quote.get("c"),
         },
-        headers={"Access-Control-Allow-Origin": "*"},
     )
 
 

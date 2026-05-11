@@ -5,6 +5,7 @@ import type { Article, Theme } from "@/types";
 import { useUiStore } from "@/stores/ui";
 import { useNewsStore } from "@/stores/news";
 import { usePrefsStore } from "@/stores/prefs";
+import { safeUrl } from "@/composables/safeUrl";
 import BookmarkButton from "./BookmarkButton.vue";
 
 const props = defineProps<{ article: Article }>();
@@ -59,9 +60,9 @@ function onTitleClick() {
       <div class="flex-1 min-w-0">
         <h3 class="text-base font-semibold leading-snug mb-1.5">
           <a
-            :href="article.url"
+            :href="safeUrl(article.url)"
             target="_blank"
-            rel="noopener"
+            rel="noopener noreferrer"
             class="hover:text-brand-subtle"
             :class="isRead ? 'text-ink-mid' : 'text-ink-high'"
             @click="onTitleClick"
