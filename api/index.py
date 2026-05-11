@@ -25,8 +25,33 @@ from fastapi import FastAPI, Query, Depends
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
 
 from rate_limit import rate_limit  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Security headers middleware — applied to every response coming out of
+# FastAPI. (vercel.json's `headers` config only applies to static routes,
+# not function responses, so we belt-and-suspenders it here.)
+# ---------------------------------------------------------------------------
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        h = response.headers
+        h.setdefault("X-Frame-Options",          "DENY")
+        h.setdefault("X-Content-Type-Options",   "nosniff")
+        h.setdefault("Referrer-Policy",          "strict-origin-when-cross-origin")
+        h.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+        )
+        h.setdefault(
+            "Strict-Transport-Security",
+            "max-age=63072000; includeSubDomains; preload",
+        )
+        return response
 
 # Make repo-root modules importable
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,6 +98,10 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
     max_age=600,
 )
+
+# Added LAST → wraps OUTSIDE CORS → headers get applied to every response,
+# including CORS preflights and error responses.
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------------------------------------------------------------------------
