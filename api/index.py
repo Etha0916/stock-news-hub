@@ -28,8 +28,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from rate_limit import rate_limit  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Security headers middleware — applied to every response coming out of
@@ -68,6 +66,7 @@ from db import (  # noqa: E402
     load_watchlist_symbols,
     get_conn,
 )
+from rate_limit import rate_limit  # noqa: E402
 from fastapi import Body  # noqa: E402
 
 
