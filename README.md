@@ -68,31 +68,34 @@ frontend/          Vue 3 + Vite + Pinia client
 
 ### Problem
 
-Given an article $a$ (title + summary) and a finite set of themes
-$\mathcal{C} = \{\text{aapl}, \text{semi}, \text{ai}, \text{fed}, \ldots\}$,
-assign zero or more theme labels. The classifier must be **explainable** (we
-have to be able to answer "why was this article tagged `semi`?"), **cheap**
-(runs ~30 times per cron, on the order of 1000 articles), and **multi-label**
-(an article about Nvidia's AI chip is `nvda`, `semi`, and `ai` simultaneously).
+Given an article `a` (title + summary) and a finite set of themes
+`C = { aapl, semi, ai, fed, ... }`, assign zero or more theme labels. The
+classifier must be **explainable** (we have to be able to answer "why was
+this article tagged `semi`?"), **cheap** (runs ~30 times per cron, on the
+order of 1000 articles), and **multi-label** (an article about Nvidia's
+AI chip is `nvda`, `semi`, and `ai` simultaneously).
 
 ### Model
 
-For each theme $c$ we maintain four keyword sets — strong-positive,
+For each theme `c` we maintain four keyword sets — strong-positive,
 weak-positive, negative (vetoes), and co-occurrence pairs — with associated
 weights. The score is
 
-$$
-s_c(a) = \underbrace{w_H \sum_{k \in K^H_c} \mathbb{1}\{k \in a\}}_{\text{strong positives, }w_H = 3}
-       + \underbrace{w_M \sum_{k \in K^M_c} \mathbb{1}\{k \in a\}}_{\text{weak positives, }w_M = 1}
-       - \underbrace{\sum_{n \in K^N_c} w_n \mathbb{1}\{n \in a\}}_{\text{vetoes}}
-       + \underbrace{\sum_{P \in K^{CO}_c} w_P \prod_{k \in P} \mathbb{1}\{k \in a\}}_{\text{co-occurrence}}
-$$
+```
+                    strong positives           weak positives
+s_c(a) = w_H · | { k ∈ K_c^H : k ∈ a } |  +  w_M · | { k ∈ K_c^M : k ∈ a } |
+
+                    vetoes                         co-occurrence
+       − Σ_{n ∈ K_c^N}  w_n · 1[n ∈ a]   +   Σ_{P ∈ K_c^CO}  w_P · ∏_{k ∈ P} 1[k ∈ a]
+
+with  w_H = 3,  w_M = 1
+```
 
 clamped at zero, and the label assignment is
 
-$$
-\hat{y}_c(a) = \mathbb{1}\{\max(s_c(a), 0) \geq \tau\}, \quad \tau = 1.5.
-$$
+```
+ŷ_c(a) = 1[ max(s_c(a), 0) ≥ τ ],   τ = 1.5
+```
 
 So **one strong hit** (`TSMC`, `FOMC`) **or two weak hits** (`chip` + `foundry`)
 tags the article. **Negatives are vetoes** — they exist to fix specific
@@ -160,20 +163,20 @@ For each text:
    emits English unigrams + bigrams plus Chinese character 2-grams. Bigrams
    are important — without them, "Nvidia Q3" and "Q3 Nvidia" produce
    identical fingerprints despite different intent.
-2. For each feature $f$ compute a 64-bit hash $h_f$. We use SHA-1 truncated
+2. For each feature `f` compute a 64-bit hash `h_f`. We use SHA-1 truncated
    to 64 bits.
-3. Maintain a vector $\mathbf{v} \in \mathbb{Z}^{64}$. For each feature:
-   $v_i \mathrel{+}= 1$ if bit $i$ of $h_f$ is 1, else $v_i \mathrel{-}= 1$.
-4. The SimHash $S \in \{0,1\}^{64}$ is the sign of $\mathbf{v}$:
-   bit $i$ of $S$ is $1$ iff $v_i > 0$.
+3. Maintain a vector `v ∈ ℤ^64`. For each feature:
+   `v[i] += 1` if bit `i` of `h_f` is 1, else `v[i] -= 1`.
+4. The SimHash `S ∈ {0,1}^64` is the sign of `v`:
+   bit `i` of `S` is `1` iff `v[i] > 0`.
 
 Two near-duplicates produce SimHashes that differ in only a few bits — the
-**Hamming distance** $d_H(S_a, S_b)$ approximates the symmetric difference of
+**Hamming distance** `d_H(S_a, S_b)` approximates the symmetric difference of
 feature sets, scaled by 64. We declare a duplicate when
 
-$$
-d_H(S_a, S_b) \leq 6 \quad (\text{out of 64}).
-$$
+```
+d_H(S_a, S_b) ≤ 6    (out of 64 bits)
+```
 
 This threshold comes from Manku, Jain & Sarma (2007), who established 3
 as the canonical threshold for web-page-scale documents (thousands of
@@ -224,51 +227,49 @@ sequences. We want a Jaccard-style set-similarity test that catches these.
 
 ### Algorithm
 
-For each article we compute a **MinHash signature** of size $n = 128$:
+For each article we compute a **MinHash signature** of size `n = 128`:
 
-1. Define a set of $k$-shingles. We use $k = 5$ character-level shingles,
+1. Define a set of `k`-shingles. We use `k = 5` character-level shingles,
    stripping whitespace, so that "Nvidia Q3" and "Nvidia  Q3" share shingles.
-2. For each of $n$ independent hash functions $h_1, \ldots, h_n$ (we
-   parameterize MD5 with a 2-byte salt), let
-   $\mathrm{MinHash}_i(A) = \min_{x \in A} h_i(x)$.
-3. The signature is $\sigma(A) = (\mathrm{MinHash}_1(A), \ldots, \mathrm{MinHash}_n(A))$.
+2. For each of `n` independent hash functions `h_1, ..., h_n` (we parameterize
+   MD5 with a 2-byte salt), let `MinHash_i(A) = min_{x ∈ A} h_i(x)`.
+3. The signature is `σ(A) = (MinHash_1(A), ..., MinHash_n(A))`.
 
-Broder (1997) shows that for any two sets $A, B$:
+Broder (1997) shows that for any two sets `A, B`:
 
-$$
-\Pr[\mathrm{MinHash}_i(A) = \mathrm{MinHash}_i(B)] = J(A, B) = \frac{|A \cap B|}{|A \cup B|}.
-$$
+```
+Pr[ MinHash_i(A) = MinHash_i(B) ]  =  J(A, B)  =  |A ∩ B| / |A ∪ B|
+```
 
 So estimating Jaccard reduces to counting signature collisions:
 
-$$
-\hat{J}(A, B) = \frac{1}{n} \sum_{i=1}^{n} \mathbb{1}\{\sigma_i(A) = \sigma_i(B)\}.
-$$
+```
+Ĵ(A, B) = (1/n) · Σ_{i=1..n} 1[ σ_i(A) = σ_i(B) ]
+```
 
 ### Why LSH? — making the query cheap
 
 A pool of 1000 articles in the past 24 hours produces 1000 signatures.
-Pairwise Jaccard with the new article is $O(n)$ each, $O(N n)$ total — fine
+Pairwise Jaccard with the new article is `O(n)` each, `O(N·n)` total — fine
 for our scale but wasteful. **LSH banding** (Gionis-Indyk-Motwani 1999) cuts
-this to roughly $O(\sqrt{N})$ candidates:
+this to roughly `O(√N)` candidates:
 
-Split the signature into $b$ bands of $r$ rows ($b \cdot r = n$). Hash each
+Split the signature into `b` bands of `r` rows (`b · r = n`). Hash each
 band to a bucket. Two signatures **share a bucket on at least one band** iff
-they agree on all $r$ rows of that band. The probability of this happening
-given Jaccard $t$ is
+they agree on all `r` rows of that band. The probability of this happening
+given Jaccard `t` is
 
-$$
-P_{\text{LSH}}(t) = 1 - (1 - t^r)^b,
-$$
+```
+P_LSH(t) = 1 − (1 − t^r)^b
+```
 
-which is an S-curve crossing 0.5 near our chosen threshold. We pick $(b, r)$
-to minimize $|P_{\text{LSH}}(\tau) - 0.5|$ at our target threshold
-$\tau = 0.6$. For $n = 128$ this gives $(b, r) = (16, 8)$.
+which is an S-curve crossing 0.5 near our chosen threshold. We pick `(b, r)`
+to minimize `|P_LSH(τ) − 0.5|` at our target threshold `τ = 0.6`. For
+`n = 128` this gives `(b, r) = (16, 8)`.
 
 Query a new article by hashing its bands, looking up each band's bucket,
 unioning the candidates, and finally computing the exact Jaccard estimate
-$\hat{J}$ against each candidate. Confirmed duplicate iff
-$\hat{J} \geq 0.6$.
+`Ĵ` against each candidate. Confirmed duplicate iff `Ĵ ≥ 0.6`.
 
 ### Why 0.6, not 0.7?
 
@@ -312,17 +313,17 @@ caught too.
 Chronological feed ("newest first") is easy but not always optimal. When the
 user picks "Top" instead of "Latest", we want a score that combines:
 
-- **Theme score** $s_c(a)$ — how well the article matches the user's filter
+- **Theme score** `s_c(a)` — how well the article matches the user's filter
 - **Recency** — articles age out of relevance fast in finance news
 - **Future**: engagement (clicks, time-on-page) — not yet implemented
 
 ### Decay function
 
-Exponential decay with half-life $T_{1/2} = 24$ hours:
+Exponential decay with half-life `T_½ = 24` hours:
 
-$$
-W(\Delta t) = e^{-\lambda \Delta t}, \quad \lambda = \frac{\ln 2}{T_{1/2}} \approx 0.0289 \text{ hr}^{-1}
-$$
+```
+W(Δt) = exp( −λ · Δt )       where  λ = ln(2) / T_½  ≈  0.0289  per hour
+```
 
 So an article 24 hours old contributes 50% of its theme-score weight, 48
 hours old 25%, and so on. The half-life of 24 hours is calibrated for
@@ -331,11 +332,11 @@ but slower than breaking news (1-hour half-life).
 
 ### Combined relevance score
 
-$$
-R(a, c) = \max_{c \in \text{filter}} s_c(a) \cdot e^{-\lambda \Delta t_a}
-$$
+```
+R(a, c) = max_{c ∈ filter}  s_c(a) · exp(−λ · Δt_a)
+```
 
-When no filter is active, $\max_c$ is taken over all themes — articles with
+When no filter is active, the `max` is taken over all themes — articles with
 a strong signal in any theme bubble up. When a filter is active, only that
 theme's scores matter.
 
