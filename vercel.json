@@ -1,6 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "outputDirectory": "docs",
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "{config,db,dedupe,classify,ingest,rate_limit}.py"
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
