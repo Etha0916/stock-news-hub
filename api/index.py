@@ -72,6 +72,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Strict-Transport-Security",
             "max-age=63072000; includeSubDomains; preload",
         )
+        h.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; font-src 'self'; "
+            "connect-src 'self' https://*.supabase.co wss://*.supabase.co; "
+            "frame-ancestors 'none'; base-uri 'self'; form-action 'self'; "
+            "object-src 'none'; upgrade-insecure-requests",
+        )
         return response
 
 # ---------------------------------------------------------------------------
