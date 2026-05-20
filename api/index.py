@@ -21,12 +21,35 @@ import urllib.request
 from datetime import datetime, timezone, time as dtime
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Query, Depends
+# Make repo-root modules importable BEFORE any non-stdlib import that needs them
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from fastapi import FastAPI
+
+# Create app as the FIRST top-level non-import statement so Vercel's static
+# AST scanner finds it quickly. Middleware / routes are attached below.
+app = FastAPI(title="Fin-Tech News Hub API", docs_url=None, redoc_url=None)
+
+import re
+
+from fastapi import Query, Depends, Body
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
+
+from config import THEMES, THEME_GROUPS, yahoo_finance_ticker_rss  # noqa: E402
+from db import (  # noqa: E402
+    query_articles,
+    stats,
+    register_watchlist_ticker,
+    load_watchlist_symbols,
+    get_conn,
+)
+from rate_limit import rate_limit  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -50,28 +73,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "max-age=63072000; includeSubDomains; preload",
         )
         return response
-
-# Make repo-root modules importable
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-import re
-
-from config import THEMES, THEME_GROUPS, yahoo_finance_ticker_rss  # noqa: E402
-from db import (  # noqa: E402
-    query_articles,
-    stats,
-    register_watchlist_ticker,
-    load_watchlist_symbols,
-    get_conn,
-)
-from rate_limit import rate_limit  # noqa: E402
-from fastapi import Body  # noqa: E402
-
-
-app = FastAPI(title="Fin-Tech News Hub API",
-              docs_url=None, redoc_url=None)
 
 # ---------------------------------------------------------------------------
 # CORS — restrict to known origins. Add new domains here when a custom .com
