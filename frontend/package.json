@@ -13,7 +13,7 @@
     "vue": "^3.4.27",
     "vue-router": "^4.3.2",
     "pinia": "^2.1.7",
-    "pinia-plugin-persistedstate": "^3.2.1",
+    "pinia-plugin-persistedstate": "^4.7.1",
     "lightweight-charts": "^4.2.0",
     "@supabase/supabase-js": "^2.43.4"
   },
