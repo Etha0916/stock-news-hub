@@ -49,6 +49,44 @@ const isRead = computed(() => prefs.isRead(props.article.id));
 function onTitleClick() {
   prefs.markRead(props.article.id);
 }
+
+// ----- Sentiment indicator -----
+// score ∈ [-1, +1]; we colour-band it conservatively so only clearly
+// directional articles get a coloured dot (most news is mildly mixed).
+const sentiment = computed(() => {
+  const s = props.article.sentiment_score;
+  if (s == null) {
+    return { show: false, colour: "", emoji: "", label: "" };
+  }
+  if (s >= 0.3) {
+    return {
+      show: true,
+      colour: "bg-emerald-500",
+      emoji: "🟢",
+      label: ui.lang === "zh" ? `偏多 (${s.toFixed(2)})` : `Bullish (${s.toFixed(2)})`,
+    };
+  }
+  if (s <= -0.3) {
+    return {
+      show: true,
+      colour: "bg-rose-500",
+      emoji: "🔴",
+      label: ui.lang === "zh" ? `偏空 (${s.toFixed(2)})` : `Bearish (${s.toFixed(2)})`,
+    };
+  }
+  return {
+    show: true,
+    colour: "bg-slate-400",
+    emoji: "⚪",
+    label: ui.lang === "zh" ? `中性 (${s.toFixed(2)})` : `Neutral (${s.toFixed(2)})`,
+  };
+});
+
+const sentimentTooltip = computed(() => {
+  const r = props.article.sentiment_rationale;
+  const base = sentiment.value.label;
+  return r ? `${base} — ${r}` : base;
+});
 </script>
 
 <template>
@@ -58,7 +96,14 @@ function onTitleClick() {
   >
     <div class="flex items-start gap-2">
       <div class="flex-1 min-w-0">
-        <h3 class="text-base font-semibold leading-snug mb-1.5">
+        <h3 class="text-base font-semibold leading-snug mb-1.5 flex items-start gap-2">
+          <span
+            v-if="sentiment.show"
+            :class="['inline-block rounded-full mt-1.5 flex-shrink-0', sentiment.colour]"
+            :title="sentimentTooltip"
+            style="width: 8px; height: 8px;"
+            aria-hidden="true"
+          />
           <a
             :href="safeUrl(article.url)"
             target="_blank"

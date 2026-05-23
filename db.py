@@ -64,16 +64,22 @@ def upsert_article(conn, article: dict) -> int | None:
     Insert if URL is new; skip if URL already exists.
     Returns the new article's id on insert, or None on duplicate.
 
-    `article` may carry optional 'simhash' (signed 64-bit BIGINT) and
-    'minhash_bytes' (raw bytes, see dedupe.serialize_minhash).
+    `article` may carry optional:
+      - 'simhash' (signed 64-bit BIGINT)
+      - 'minhash_bytes' (raw bytes, see dedupe.serialize_minhash)
+      - 'sentiment_score' / 'sentiment_confidence' (float in [-1,1] / [0,1])
+      - 'sentiment_rationale' / 'sentiment_model' / 'sentiment_scored_at'
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO articles
               (url_hash, url, title, summary, published_at,
-               source, labels, scores, simhash, minhash_bytes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               source, labels, scores, simhash, minhash_bytes,
+               sentiment_score, sentiment_confidence, sentiment_rationale,
+               sentiment_model, sentiment_scored_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s)
             ON CONFLICT (url_hash) DO NOTHING
             RETURNING id
             """,
@@ -88,6 +94,11 @@ def upsert_article(conn, article: dict) -> int | None:
                 Jsonb(article["scores"]),
                 article.get("simhash"),
                 article.get("minhash_bytes"),
+                article.get("sentiment_score"),
+                article.get("sentiment_confidence"),
+                article.get("sentiment_rationale"),
+                article.get("sentiment_model"),
+                article.get("sentiment_scored_at"),
             ),
         )
         row = cur.fetchone()
@@ -142,7 +153,9 @@ def query_articles(
             cur.execute(
                 """
                 SELECT id, url, title, summary, published_at,
-                       source, labels, scores
+                       source, labels, scores,
+                       sentiment_score, sentiment_confidence,
+                       sentiment_rationale
                 FROM articles
                 WHERE published_at > NOW() - %s::interval
                   AND labels && %s
@@ -155,7 +168,9 @@ def query_articles(
             cur.execute(
                 """
                 SELECT id, url, title, summary, published_at,
-                       source, labels, scores
+                       source, labels, scores,
+                       sentiment_score, sentiment_confidence,
+                       sentiment_rationale
                 FROM articles
                 WHERE published_at > NOW() - %s::interval
                 ORDER BY published_at DESC
