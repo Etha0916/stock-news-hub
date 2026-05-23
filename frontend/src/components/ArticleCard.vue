@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { RouterLink } from "vue-router";
 import type { Article, Theme } from "@/types";
 import { useUiStore } from "@/stores/ui";
@@ -87,6 +87,18 @@ const sentimentTooltip = computed(() => {
   const base = sentiment.value.label;
   return r ? `${base} — ${r}` : base;
 });
+
+// Mobile-friendly: click the dot to toggle a detail panel below the title.
+// Desktop users get the same info via the :title attribute hover.
+const showSentimentDetail = ref(false);
+
+const sentimentBorderClass = computed(() => {
+  const s = props.article.sentiment_score;
+  if (s == null) return "";
+  if (s >= 0.3) return "border-emerald-500";
+  if (s <= -0.3) return "border-rose-500";
+  return "border-slate-400";
+});
 </script>
 
 <template>
@@ -97,13 +109,21 @@ const sentimentTooltip = computed(() => {
     <div class="flex items-start gap-2">
       <div class="flex-1 min-w-0">
         <h3 class="text-base font-semibold leading-snug mb-1.5 flex items-start gap-2">
-          <span
+          <button
             v-if="sentiment.show"
-            :class="['inline-block rounded-full mt-1.5 flex-shrink-0', sentiment.colour]"
+            type="button"
+            class="-m-2 p-2 mt-0 flex-shrink-0 rounded hover:bg-surface-2 transition-colors"
             :title="sentimentTooltip"
-            style="width: 8px; height: 8px;"
-            aria-hidden="true"
-          />
+            :aria-label="sentimentTooltip"
+            :aria-expanded="showSentimentDetail"
+            @click.stop.prevent="showSentimentDetail = !showSentimentDetail"
+          >
+            <span
+              :class="['inline-block rounded-full', sentiment.colour]"
+              style="width: 8px; height: 8px;"
+              aria-hidden="true"
+            />
+          </button>
           <a
             :href="safeUrl(article.url)"
             target="_blank"
@@ -115,6 +135,18 @@ const sentimentTooltip = computed(() => {
             {{ article.title }}
           </a>
         </h3>
+        <!-- Sentiment detail panel — tap dot to toggle. Mobile-friendly,
+             desktop users can still hover the dot for the same info. -->
+        <div
+          v-if="showSentimentDetail && sentiment.show"
+          class="text-xs text-ink-mid mb-2 mt-0.5 border-l-2 pl-2 py-0.5"
+          :class="sentimentBorderClass"
+        >
+          <span class="font-medium">{{ sentiment.label }}</span>
+          <template v-if="article.sentiment_rationale">
+            <span class="text-ink-low"> — {{ article.sentiment_rationale }}</span>
+          </template>
+        </div>
         <div class="text-xs text-ink-low mb-2">
           <span v-if="isRead" class="text-ink-faint mr-1.5">
             {{ ui.lang === "zh" ? "已讀 ·" : "read ·" }}
