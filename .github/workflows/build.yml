@@ -24,7 +24,7 @@ jobs:
     # 2-7 minutes just for sentiment on top of the regular fetch + dedupe.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-python@v5
         with:
