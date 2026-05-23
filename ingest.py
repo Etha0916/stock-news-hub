@@ -44,6 +44,7 @@ from dedupe import (
     find_near_dup_minhash,
     JACCARD_THRESHOLD,
 )
+import sentiment as _sentiment
 
 
 SIMHASH_THRESHOLD = 6
@@ -214,8 +215,13 @@ def main() -> None:
             all_articles.extend(arts)
     log(f"[ingest] fetched {len(all_articles)} candidate articles")
 
-    # ----- Phase 4: dedupe + insert -----
+    # ----- Phase 4: dedupe + sentiment + insert -----
     inserted = url_dup = sh_dup = mh_dup = errors = 0
+    sentiment_scored = sentiment_failed = 0
+    sentiment_on = _sentiment.is_enabled()
+    if not sentiment_on:
+        log("[ingest] ANTHROPIC_API_KEY not set — skipping sentiment scoring")
+
     with get_conn() as conn:
         for art in all_articles:
             text = art["title"] + " " + art.get("summary", "")
@@ -232,7 +238,23 @@ def main() -> None:
                 mh_dup += 1
                 continue
 
-            # 4c. Insert
+            # 4c. Sentiment (best-effort, never blocks insert)
+            #     Only pay the LLM cost for articles that survived dedupe.
+            if sentiment_on:
+                result = _sentiment.score_article(
+                    art["title"], art.get("summary", "")
+                )
+                if result is not None:
+                    art["sentiment_score"] = result["score"]
+                    art["sentiment_confidence"] = result["confidence"]
+                    art["sentiment_rationale"] = result["rationale"]
+                    art["sentiment_model"] = result["model"]
+                    art["sentiment_scored_at"] = result["scored_at"]
+                    sentiment_scored += 1
+                else:
+                    sentiment_failed += 1
+
+            # 4d. Insert
             art["simhash"] = to_signed_bigint(sh_unsigned)
             art["minhash_bytes"] = serialize_minhash(new_mh)
             try:
@@ -252,6 +274,9 @@ def main() -> None:
     log(f"[ingest] done in {elapsed:.1f}s — "
         f"{inserted} new, {url_dup} url_dups, "
         f"{sh_dup} simhash_dups, {mh_dup} minhash_dups, {errors} errors")
+    if sentiment_on:
+        log(f"[ingest] sentiment — {sentiment_scored} scored, "
+            f"{sentiment_failed} failed")
 
 
 if __name__ == "__main__":

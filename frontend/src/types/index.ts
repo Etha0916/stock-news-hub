@@ -29,6 +29,10 @@ export interface Article {
   source: string;
   labels: string[];
   scores?: Record<string, number>; // per-theme classifier scores
+  // Sentiment (added in migration 006; null for older articles)
+  sentiment_score?: number | null;       // -1.0 .. +1.0
+  sentiment_confidence?: number | null;  // 0.0 .. 1.0
+  sentiment_rationale?: string | null;
 }
 
 export type SortMode = "time" | "relevance";

@@ -225,6 +225,10 @@ def get_articles(
         "source":    r["source"],
         "labels":    r["labels"],
         "scores":    r.get("scores") or {},   # per-theme classifier scores
+        # Sentiment (may be null for articles ingested before migration 006)
+        "sentiment_score":      r.get("sentiment_score"),
+        "sentiment_confidence": r.get("sentiment_confidence"),
+        "sentiment_rationale":  r.get("sentiment_rationale"),
     } for r in rows]
 
     return JSONResponse(
