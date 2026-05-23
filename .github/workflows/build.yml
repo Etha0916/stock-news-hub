@@ -19,7 +19,10 @@ on:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Bumped from 5 to 15 minutes: sentiment scoring adds ~1-2s per new
+    # article via Anthropic API. At ~100-200 new articles per run, that's
+    # 2-7 minutes just for sentiment on top of the regular fetch + dedupe.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
