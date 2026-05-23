@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import hashlib
+import concurrent.futures
 from datetime import datetime, timezone
 from time import mktime
 from concurrent.futures import ThreadPoolExecutor
@@ -48,6 +49,15 @@ import sentiment as _sentiment
 
 
 SIMHASH_THRESHOLD = 6
+
+# Sentiment scoring concurrency. Claude Haiku 4.5 typical latency is 1-2s;
+# at 4 workers we get ~50-100 articles/min. Tier 1 rate limit is 50 RPM so
+# 4 is the safe ceiling. Don't bump without confirming a higher tier.
+MAX_SENTIMENT_WORKERS = 4
+# Hard cap on sentiment phase. Beyond this, remaining candidates are inserted
+# with NULL sentiment. The GitHub Action's timeout-minutes:15 gives a 5-min
+# buffer for dedupe + insert phases after sentiment finishes.
+SENTIMENT_BUDGET_S = 600
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -215,55 +225,90 @@ def main() -> None:
             all_articles.extend(arts)
     log(f"[ingest] fetched {len(all_articles)} candidate articles")
 
-    # ----- Phase 4: dedupe + sentiment + insert -----
-    inserted = url_dup = sh_dup = mh_dup = errors = 0
-    sentiment_scored = sentiment_failed = 0
+    # ----- Phase 4: dedupe + sentiment + insert (3 sub-phases) -----
+    # Split into phases so sentiment scoring (the slow I/O-bound part) can
+    # run in parallel without serializing on dedupe or DB writes.
     sentiment_on = _sentiment.is_enabled()
     if not sentiment_on:
         log("[ingest] ANTHROPIC_API_KEY not set — skipping sentiment scoring")
 
+    # ----- Phase 4a: dedupe (sequential, in-memory, fast) -----
+    sh_dup = mh_dup = 0
+    candidates: list[dict] = []  # articles that survived dedupe, ready for sentiment + insert
+    for art in all_articles:
+        text = art["title"] + " " + art.get("summary", "")
+        sh_unsigned = simhash(text)
+        if find_near_duplicate(sh_unsigned, sh_pool, SIMHASH_THRESHOLD) is not None:
+            sh_dup += 1
+            continue
+        new_mh = make_minhash(text)
+        if find_near_dup_minhash(new_mh, lsh, mh_pool, JACCARD_THRESHOLD):
+            mh_dup += 1
+            continue
+        # Attach hash artifacts now so insert phase doesn't recompute
+        art["simhash"] = to_signed_bigint(sh_unsigned)
+        art["minhash_bytes"] = serialize_minhash(new_mh)
+        art["_minhash_obj"] = new_mh  # for post-insert pool update; not persisted
+        candidates.append(art)
+        # In-run SimHash pool update so intra-run verbatim dups still get caught
+        # (MinHash pool update needs an article id, so we defer that to insert phase)
+        sh_pool.append(art["simhash"])
+
+    log(f"[ingest] dedupe — sh_dup:{sh_dup} mh_dup:{mh_dup} "
+        f"candidates:{len(candidates)} (out of {len(all_articles)} fetched)")
+
+    # ----- Phase 4b: parallel sentiment scoring -----
+    sentiment_scored = sentiment_failed = sentiment_skipped = 0
+    if sentiment_on and candidates:
+        log(f"[ingest] sentiment — scoring {len(candidates)} candidates "
+            f"(workers={MAX_SENTIMENT_WORKERS}, budget={SENTIMENT_BUDGET_S}s)")
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=MAX_SENTIMENT_WORKERS
+        ) as ex:
+            futures = {
+                ex.submit(_sentiment.score_article, a["title"], a.get("summary", "")): a
+                for a in candidates
+            }
+            try:
+                for future in concurrent.futures.as_completed(
+                    futures, timeout=SENTIMENT_BUDGET_S
+                ):
+                    art = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        log(f"[sentiment] worker exception: {e}")
+                        sentiment_failed += 1
+                        continue
+                    if result is not None:
+                        art["sentiment_score"]      = result["score"]
+                        art["sentiment_confidence"] = result["confidence"]
+                        art["sentiment_rationale"]  = result["rationale"]
+                        art["sentiment_model"]      = result["model"]
+                        art["sentiment_scored_at"]  = result["scored_at"]
+                        sentiment_scored += 1
+                    else:
+                        sentiment_failed += 1
+            except concurrent.futures.TimeoutError:
+                sentiment_skipped = sum(1 for f in futures if not f.done())
+                log(f"[ingest] sentiment budget exceeded — "
+                    f"{sentiment_skipped} candidates will be inserted with NULL sentiment")
+                for f in futures:
+                    if not f.done():
+                        f.cancel()
+
+    # ----- Phase 4c: sequential insert -----
+    inserted = url_dup = errors = 0
     with get_conn() as conn:
-        for art in all_articles:
-            text = art["title"] + " " + art.get("summary", "")
-
-            # 4a. SimHash check (cheap, catches verbatim reprints)
-            sh_unsigned = simhash(text)
-            if find_near_duplicate(sh_unsigned, sh_pool, SIMHASH_THRESHOLD) is not None:
-                sh_dup += 1
-                continue
-
-            # 4b. MinHash + LSH check (pricier, catches paraphrased reprints)
-            new_mh = make_minhash(text)
-            if find_near_dup_minhash(new_mh, lsh, mh_pool, JACCARD_THRESHOLD):
-                mh_dup += 1
-                continue
-
-            # 4c. Sentiment (best-effort, never blocks insert)
-            #     Only pay the LLM cost for articles that survived dedupe.
-            if sentiment_on:
-                result = _sentiment.score_article(
-                    art["title"], art.get("summary", "")
-                )
-                if result is not None:
-                    art["sentiment_score"] = result["score"]
-                    art["sentiment_confidence"] = result["confidence"]
-                    art["sentiment_rationale"] = result["rationale"]
-                    art["sentiment_model"] = result["model"]
-                    art["sentiment_scored_at"] = result["scored_at"]
-                    sentiment_scored += 1
-                else:
-                    sentiment_failed += 1
-
-            # 4d. Insert
-            art["simhash"] = to_signed_bigint(sh_unsigned)
-            art["minhash_bytes"] = serialize_minhash(new_mh)
+        for art in candidates:
             try:
                 new_id = upsert_article(conn, art)
                 if new_id is not None:
                     inserted += 1
-                    sh_pool.append(art["simhash"])
-                    mh_pool[str(new_id)] = new_mh
-                    lsh.insert(str(new_id), new_mh)
+                    mh_obj = art.get("_minhash_obj")
+                    if mh_obj is not None:
+                        mh_pool[str(new_id)] = mh_obj
+                        lsh.insert(str(new_id), mh_obj)
                 else:
                     url_dup += 1
             except Exception as e:
@@ -276,7 +321,7 @@ def main() -> None:
         f"{sh_dup} simhash_dups, {mh_dup} minhash_dups, {errors} errors")
     if sentiment_on:
         log(f"[ingest] sentiment — {sentiment_scored} scored, "
-            f"{sentiment_failed} failed")
+            f"{sentiment_failed} failed, {sentiment_skipped} skipped (budget)")
 
 
 if __name__ == "__main__":
