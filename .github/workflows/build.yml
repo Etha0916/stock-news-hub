@@ -34,5 +34,8 @@ jobs:
       - name: Run ingest
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # ANTHROPIC_API_KEY is optional: when set, ingest scores sentiment
+          # via Claude Haiku 4.5; when unset, sentiment columns stay NULL.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: python -u ingest.py
