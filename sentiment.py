@@ -28,6 +28,8 @@ from __future__ import annotations
 import os
 import json
 import re
+import time
+import threading
 from typing import Optional, TypedDict
 from datetime import datetime, timezone
 
@@ -39,6 +41,36 @@ MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 200
 TIMEOUT_S = 15.0
 PROMPT_VERSION = "v1"
+
+# Anthropic Tier 1 rate limit for Haiku is 50 RPM. We cap at 45 RPM for a
+# safety margin so concurrent workers never trigger 429 errors.
+# Upgrading to Tier 2 ($40 total credit purchases) raises this to 1,000 RPM
+# and makes this throttle effectively a no-op.
+_RATE_LIMIT_RPM = 45
+_MIN_CALL_INTERVAL_S = 60.0 / _RATE_LIMIT_RPM  # ~1.33 seconds
+
+# Shared throttle state across threads. The lock is held very briefly (just
+# to read/update _last_api_call_at), so contention is negligible even with
+# many workers.
+_rate_limit_lock = threading.Lock()
+_last_api_call_at: float = 0.0
+
+
+def _wait_for_rate_limit() -> None:
+    """Block (sleep) until safe to send the next API request.
+
+    Thread-safe: enforces a global lower bound on inter-call interval no
+    matter how many workers are calling score_article() concurrently. With
+    4 workers and ~1.5s API latency, this pipelines at the rate-limit
+    ceiling without ever exceeding it.
+    """
+    global _last_api_call_at
+    with _rate_limit_lock:
+        now = time.monotonic()
+        elapsed = now - _last_api_call_at
+        if elapsed < _MIN_CALL_INTERVAL_S:
+            time.sleep(_MIN_CALL_INTERVAL_S - elapsed)
+        _last_api_call_at = time.monotonic()
 
 
 class SentimentResult(TypedDict):
@@ -71,7 +103,10 @@ def _get_client():
     # Import inside the function so the rest of the app can be imported
     # even if anthropic isn't installed (it's only needed at scoring time).
     from anthropic import Anthropic  # noqa: PLC0415
-    _client = Anthropic(api_key=api_key, timeout=TIMEOUT_S)
+    # max_retries=1: with our own _wait_for_rate_limit() pacing, the SDK
+    # shouldn't see 429s in steady state. Cap retries so transient network
+    # blips get one chance but we don't amplify rate-limit hits.
+    _client = Anthropic(api_key=api_key, timeout=TIMEOUT_S, max_retries=1)
     return _client
 
 
@@ -153,6 +188,9 @@ def score_article(
     try:
         client = _get_client()
         prompt = _build_prompt(title, summary)
+        # Wait if needed to stay under the global RPM ceiling. Cheap when
+        # workers aren't saturated; blocks briefly when they are.
+        _wait_for_rate_limit()
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
