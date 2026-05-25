@@ -183,11 +183,14 @@ def main() -> None:
         sys.exit(1)
 
     # ----- Phase 2: load existing dedup state -----
+    # 12h window (down from 24h) + LIMIT 5000 in db.py keep this query under
+    # 5s even when article volume spikes. Older 24h entries that we miss are
+    # still backstopped by the url_hash UNIQUE constraint at INSERT time.
     log("[ingest] loading recent SimHashes + MinHashes...")
     try:
         with get_conn() as conn:
-            sh_pool = load_recent_simhashes(conn, hours=24)
-            mh_rows = load_recent_minhashes(conn, hours=24)
+            sh_pool = load_recent_simhashes(conn, hours=12)
+            mh_rows = load_recent_minhashes(conn, hours=12)
     except Exception as e:
         log(f"[ingest] failed to load dedup state "
             f"(did you run migration_003 yet?): {e}")

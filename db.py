@@ -105,30 +105,47 @@ def upsert_article(conn, article: dict) -> int | None:
         return row["id"] if row else None
 
 
-def load_recent_simhashes(conn, hours: int = 24) -> list[int]:
-    """Pull simhashes from the last `hours` for the in-memory dedup pool."""
+def load_recent_simhashes(conn, hours: int = 24, limit: int = 5000) -> list[int]:
+    """Pull simhashes from the last `hours` for the in-memory dedup pool.
+
+    Bounded by `limit` (newest first) to keep the query under 5s even when
+    article volume spikes. Missing older entries is fine: they'll still be
+    caught at INSERT time via the url_hash UNIQUE constraint.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT simhash FROM articles
             WHERE published_at > NOW() - %s::interval
               AND simhash IS NOT NULL
+            ORDER BY published_at DESC
+            LIMIT %s
             """,
-            (f"{int(hours)} hours",),
+            (f"{int(hours)} hours", limit),
         )
         return [row["simhash"] for row in cur.fetchall()]
 
 
-def load_recent_minhashes(conn, hours: int = 24) -> list[tuple[int, bytes]]:
-    """Pull (id, minhash_bytes) pairs from the last `hours` for LSH building."""
+def load_recent_minhashes(
+    conn, hours: int = 24, limit: int = 5000
+) -> list[tuple[int, bytes]]:
+    """Pull (id, minhash_bytes) pairs from the last `hours` for LSH building.
+
+    Same bounding logic as load_recent_simhashes — `limit` keeps the query
+    fast even with thousands of articles per day. Each MinHash is ~512 bytes,
+    so 5000 rows = ~2.5 MB transfer (fits in a couple seconds over the
+    Supabase pooler).
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT id, minhash_bytes FROM articles
             WHERE published_at > NOW() - %s::interval
               AND minhash_bytes IS NOT NULL
+            ORDER BY published_at DESC
+            LIMIT %s
             """,
-            (f"{int(hours)} hours",),
+            (f"{int(hours)} hours", limit),
         )
         return [(row["id"], bytes(row["minhash_bytes"])) for row in cur.fetchall()]
 
