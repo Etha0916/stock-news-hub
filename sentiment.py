@@ -38,9 +38,11 @@ from datetime import datetime, timezone
 # Configuration
 # ---------------------------------------------------------------------------
 MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 200
-TIMEOUT_S = 15.0
-PROMPT_VERSION = "v1"
+MAX_TOKENS = 200          # output budget for single-article scoring
+MAX_TOKENS_BATCH = 1000   # output budget for batch (~5 articles × ~200 each)
+BATCH_SIZE = 5            # articles per API call when using score_articles_batch
+TIMEOUT_S = 30.0          # 30s — batch responses can be 5x longer
+PROMPT_VERSION = "v2-batch"
 
 # Anthropic Tier 1 rate limit for Haiku is 50 RPM. We cap at 45 RPM for a
 # safety margin so concurrent workers never trigger 429 errors.
@@ -141,6 +143,82 @@ def _build_prompt(title: str, summary: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Batch scoring — score N articles in one API call.
+# Saves the per-call prompt overhead (150 tokens × (N-1)) and reduces total
+# call count to candidates / BATCH_SIZE. With N=5, expected savings ~30-35%.
+# ---------------------------------------------------------------------------
+_BATCH_PROMPT_TEMPLATE = """You are a financial sentiment analyst. Score the \
+immediate market impact of EACH news article below on a scale from -1.0 \
+(strongly bearish) to +1.0 (strongly bullish), where 0 means neutral or no \
+actionable signal.
+
+Consider: earnings surprises, guidance changes, regulatory actions, macro \
+shifts. Be calibrated: most news should score between -0.5 and +0.5; extreme \
+scores (|score| > 0.7) should be rare and reserved for clearly significant \
+events.
+
+Output a strict JSON ARRAY (no markdown fences, no commentary) with ONE \
+object per article in the SAME order as input:
+[
+  {{"score": <float>, "confidence": <float>, "rationale": "<one short sentence, max 120 chars, language matching the article>"}},
+  ...
+]
+
+Articles to score ({n} total):
+
+{articles_block}"""
+
+
+def _build_batch_prompt(articles: list[dict]) -> str:
+    """Format multiple articles into a single batched prompt."""
+    blocks = []
+    for i, art in enumerate(articles, 1):
+        title = (art.get("title") or "").strip()[:300]
+        summary = (art.get("summary") or "").strip()[:600]
+        blocks.append(f"--- Article {i} ---\nTitle: {title}\nSummary: {summary}")
+    return _BATCH_PROMPT_TEMPLATE.format(
+        n=len(articles),
+        articles_block="\n\n".join(blocks),
+    )
+
+
+# Match a JSON array at the top level (handles cases like nested {} inside rationale).
+_JSON_ARRAY_RE = re.compile(r"\[\s*\{.*?\}\s*(?:,\s*\{.*?\}\s*)*\]", re.DOTALL)
+
+
+def _parse_batch_response(text: str, expected_count: int) -> list[Optional[dict]]:
+    """Parse a JSON array from response. Returns list of dicts; None for invalid entries.
+    Always returns list of length `expected_count` (pads with None)."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    # Direct parse
+    parsed = None
+    try:
+        candidate = json.loads(text)
+        if isinstance(candidate, list):
+            parsed = candidate
+    except json.JSONDecodeError:
+        m = _JSON_ARRAY_RE.search(text)
+        if m:
+            try:
+                candidate = json.loads(m.group(0))
+                if isinstance(candidate, list):
+                    parsed = candidate
+            except json.JSONDecodeError:
+                pass
+    if parsed is None:
+        return [None] * expected_count
+    # Coerce each entry to dict or None, pad/truncate to expected length
+    result = []
+    for item in parsed[:expected_count]:
+        result.append(item if isinstance(item, dict) else None)
+    while len(result) < expected_count:
+        result.append(None)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Robust JSON extraction — model usually outputs clean JSON, but we handle
 # the case where it wraps in ```json ... ``` or adds trailing prose.
 # ---------------------------------------------------------------------------
@@ -214,6 +292,72 @@ def score_article(
         # Never let sentiment failure block ingest pipeline.
         print(f"[sentiment] score failed for title={title[:60]!r}: {e}", flush=True)
         return None
+
+
+def score_articles_batch(articles: list[dict]) -> list[Optional[SentimentResult]]:
+    """Score up to BATCH_SIZE articles in a single API call.
+
+    Saves prompt-overhead duplication (the 150-token instructions are sent
+    once per batch instead of once per article). For N=5 articles, total
+    input cost drops ~30% and output cost drops ~20% vs N individual calls.
+
+    Returns a list aligned to the input order. Entries are None when
+    parsing or scoring failed for that slot (caller treats as NULL sentiment).
+
+    For batches of 1, falls through to the single-article path so the
+    extra batch-prompt overhead doesn't apply.
+    """
+    if not articles:
+        return []
+    if len(articles) == 1:
+        a = articles[0]
+        return [score_article(a.get("title", ""), a.get("summary", ""))]
+
+    # Trim batch to BATCH_SIZE; caller is responsible for chunking, but
+    # be defensive in case they passed a bigger list.
+    if len(articles) > BATCH_SIZE:
+        out: list[Optional[SentimentResult]] = []
+        for i in range(0, len(articles), BATCH_SIZE):
+            out.extend(score_articles_batch(articles[i:i + BATCH_SIZE]))
+        return out
+
+    try:
+        client = _get_client()
+        prompt = _build_batch_prompt(articles)
+        _wait_for_rate_limit()
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS_BATCH,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = response.content[0].text if response.content else ""
+        parsed_list = _parse_batch_response(raw, len(articles))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        results: list[Optional[SentimentResult]] = []
+        for parsed in parsed_list:
+            if parsed is None:
+                results.append(None)
+                continue
+            try:
+                score = _clamp(parsed.get("score", 0.0), -1.0, 1.0)
+                confidence = _clamp(parsed.get("confidence", 0.0), 0.0, 1.0)
+                rationale = str(parsed.get("rationale", ""))[:200]
+                results.append(SentimentResult(
+                    score=score,
+                    confidence=confidence,
+                    rationale=rationale,
+                    model=MODEL,
+                    scored_at=now_iso,
+                ))
+            except (TypeError, ValueError):
+                results.append(None)
+        return results
+    except Exception as e:
+        print(
+            f"[sentiment] batch failed for {len(articles)} articles: {e}",
+            flush=True,
+        )
+        return [None] * len(articles)
 
 
 def is_enabled() -> bool:

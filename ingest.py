@@ -285,42 +285,55 @@ def main() -> None:
     log(f"[ingest] dedupe — sh_dup:{sh_dup} mh_dup:{mh_dup} "
         f"candidates:{len(candidates)} (out of {len(all_articles)} fetched)")
 
-    # ----- Phase 4b: parallel sentiment scoring -----
+    # ----- Phase 4b: parallel sentiment scoring (batched) -----
+    # Chunk candidates into batches of BATCH_SIZE (5), then submit each batch
+    # as one API call. With 4 workers × 5 articles/batch, throughput is ~25
+    # articles per API call wait, while paying the prompt overhead just once
+    # per batch (~30% cost reduction vs single-article calls).
     sentiment_scored = sentiment_failed = sentiment_skipped = 0
     if sentiment_on and candidates:
+        batch_size = _sentiment.BATCH_SIZE
+        batches = [
+            candidates[i:i + batch_size]
+            for i in range(0, len(candidates), batch_size)
+        ]
         log(f"[ingest] sentiment — scoring {len(candidates)} candidates "
+            f"in {len(batches)} batches of up to {batch_size} "
             f"(workers={MAX_SENTIMENT_WORKERS}, budget={SENTIMENT_BUDGET_S}s)")
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=MAX_SENTIMENT_WORKERS
         ) as ex:
             futures = {
-                ex.submit(_sentiment.score_article, a["title"], a.get("summary", "")): a
-                for a in candidates
+                ex.submit(_sentiment.score_articles_batch, batch): batch
+                for batch in batches
             }
             try:
                 for future in concurrent.futures.as_completed(
                     futures, timeout=SENTIMENT_BUDGET_S
                 ):
-                    art = futures[future]
+                    batch = futures[future]
                     try:
-                        result = future.result()
+                        results = future.result()
                     except Exception as e:
                         log(f"[sentiment] worker exception: {e}")
-                        sentiment_failed += 1
+                        sentiment_failed += len(batch)
                         continue
-                    if result is not None:
-                        art["sentiment_score"]      = result["score"]
-                        art["sentiment_confidence"] = result["confidence"]
-                        art["sentiment_rationale"]  = result["rationale"]
-                        art["sentiment_model"]      = result["model"]
-                        art["sentiment_scored_at"]  = result["scored_at"]
-                        sentiment_scored += 1
-                    else:
-                        sentiment_failed += 1
+                    for art, result in zip(batch, results):
+                        if result is not None:
+                            art["sentiment_score"]      = result["score"]
+                            art["sentiment_confidence"] = result["confidence"]
+                            art["sentiment_rationale"]  = result["rationale"]
+                            art["sentiment_model"]      = result["model"]
+                            art["sentiment_scored_at"]  = result["scored_at"]
+                            sentiment_scored += 1
+                        else:
+                            sentiment_failed += 1
             except concurrent.futures.TimeoutError:
-                sentiment_skipped = sum(1 for f in futures if not f.done())
+                pending_batches = [b for f, b in futures.items() if not f.done()]
+                sentiment_skipped = sum(len(b) for b in pending_batches)
                 log(f"[ingest] sentiment budget exceeded — "
-                    f"{sentiment_skipped} candidates will be inserted with NULL sentiment")
+                    f"{sentiment_skipped} candidates (in {len(pending_batches)} "
+                    f"pending batches) will be inserted with NULL sentiment")
                 for f in futures:
                     if not f.done():
                         f.cancel()
