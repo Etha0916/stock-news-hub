@@ -225,12 +225,37 @@ def main() -> None:
             all_articles.extend(arts)
     log(f"[ingest] fetched {len(all_articles)} candidate articles")
 
-    # ----- Phase 4: dedupe + sentiment + insert (3 sub-phases) -----
+    # ----- Phase 4: URL pre-check + dedupe + sentiment + insert -----
     # Split into phases so sentiment scoring (the slow I/O-bound part) can
     # run in parallel without serializing on dedupe or DB writes.
     sentiment_on = _sentiment.is_enabled()
     if not sentiment_on:
         log("[ingest] ANTHROPIC_API_KEY not set — skipping sentiment scoring")
+
+    # ----- Phase 4-pre: URL pre-check (cheapest dedupe — skip DB-known URLs) -----
+    # Without this, we pay sentiment API for articles whose url_hash is
+    # already in DB. Recent dedup pool only spans 24h; older articles with
+    # the same URL slip through SimHash/MinHash and only get caught at
+    # INSERT time (after we already paid for sentiment scoring).
+    url_skip = 0
+    existing_url_hashes: set[str] = set()
+    if all_articles:
+        try:
+            url_hashes = [a["url_hash"] for a in all_articles]
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT url_hash FROM articles WHERE url_hash = ANY(%s)",
+                    (url_hashes,),
+                )
+                existing_url_hashes = {row["url_hash"] for row in cur.fetchall()}
+        except Exception as e:
+            log(f"[ingest] URL pre-check failed (continuing without): {e}")
+
+        before = len(all_articles)
+        all_articles = [a for a in all_articles if a["url_hash"] not in existing_url_hashes]
+        url_skip = before - len(all_articles)
+        log(f"[ingest] URL pre-check — {url_skip} DB-known URLs filtered, "
+            f"{len(all_articles)} truly new to dedupe")
 
     # ----- Phase 4a: dedupe (sequential, in-memory, fast) -----
     sh_dup = mh_dup = 0
@@ -317,7 +342,7 @@ def main() -> None:
 
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     log(f"[ingest] done in {elapsed:.1f}s — "
-        f"{inserted} new, {url_dup} url_dups, "
+        f"{inserted} new, {url_skip} url_pre_skip, {url_dup} url_dup_at_insert, "
         f"{sh_dup} simhash_dups, {mh_dup} minhash_dups, {errors} errors")
     if sentiment_on:
         log(f"[ingest] sentiment — {sentiment_scored} scored, "
