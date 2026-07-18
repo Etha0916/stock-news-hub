@@ -30,3 +30,13 @@ static/
 # Secrets
 .env
 .env.local
+
+# Cowork session materials (private notes / drafts — never commit)
+dad-trading-interview.md
+praesentire-outreach-playbook.md
+github-grooming-handoff.md
+praesentire-backtester-handoff.md
+backtester-addendum-fmz.md
+bilingual-sentiment-divergence.md
+praesentire-brand/
+_d5_fix2/
